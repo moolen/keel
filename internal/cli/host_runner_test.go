@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/moolen/keel/internal/config"
+	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/vm"
 	"github.com/moolen/keel/internal/workspace"
 )
@@ -45,6 +48,13 @@ func TestHostRunnerPreparesAssetsBeforeLaunch(t *testing.T) {
 
 	var prepareOpts workspace.PrepareOptions
 	var machineAssets vm.RuntimeAssets
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
@@ -86,6 +96,49 @@ func TestHostRunnerReturnsWorkspacePrepareError(t *testing.T) {
 	err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("Run() error = %v, want propagated workspace failure", err)
+	}
+}
+
+func TestHostRunnerAutoPullsMissingRootfs(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+
+	var pulled bool
+	var machineAssets vm.RuntimeAssets
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		PullImage: func(_ context.Context, cacheDir, ref string) (image.PullResult, error) {
+			pulled = true
+			if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+				return image.PullResult{}, err
+			}
+			if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+				return image.PullResult{}, err
+			}
+			return image.PullResult{Layout: image.CacheLayout{RootfsPath: rootfsPath}}, nil
+		},
+		MachineFactory: func(_ config.Config, assets vm.RuntimeAssets) machineRunner {
+			machineAssets = assets
+			return stubMachineRunner{}
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !pulled {
+		t.Fatal("expected missing rootfs to trigger image pull")
+	}
+	if machineAssets.RootfsPath != rootfsPath {
+		t.Fatalf("machineAssets.RootfsPath = %q, want %q", machineAssets.RootfsPath, rootfsPath)
 	}
 }
 

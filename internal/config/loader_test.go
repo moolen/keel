@@ -86,6 +86,29 @@ env:
 	}
 }
 
+func TestLoadUsesGlobalImageOverride(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	globalDir := filepath.Join(homeDir, ".config", "keel")
+	projectDir := t.TempDir()
+	mkdirAll(t, globalDir)
+	writeFile(t, filepath.Join(projectDir, "keel.yaml"), "workspace:\n  target: /workspace\n")
+
+	writeFile(t, filepath.Join(globalDir, "config.yaml"), `
+image: busybox:latest
+image_cache_dir: ~/.cache/custom-keel/images
+`)
+
+	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Image != "busybox:latest" {
+		t.Fatalf("cfg.Image = %q, want busybox:latest", cfg.Image)
+	}
+}
+
 func TestApplyOverrides(t *testing.T) {
 	cfg := Default()
 	cfg.Image = "ubuntu:24.04"

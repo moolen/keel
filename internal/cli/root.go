@@ -8,11 +8,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/moolen/keel/internal/config"
+	"github.com/moolen/keel/internal/image"
 )
 
 type Dependencies struct {
 	Runner     Runner
 	LoadConfig func(context.Context, config.LoadOptions) (config.Config, error)
+	PullImage  func(context.Context, string, string) (image.PullResult, error)
 }
 
 func NewRootCommand(deps Dependencies) *cobra.Command {
@@ -69,6 +71,6 @@ func NewRootCommand(deps Dependencies) *cobra.Command {
 	root.Flags().StringVar(&image, "image", "", "override the OCI image reference")
 	root.Flags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")
 	root.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen without booting a VM")
-	root.AddCommand(newImageCommand(), newConfigCommand(deps))
+	root.AddCommand(newImageCommand(deps), newConfigCommand(deps))
 	return root
 }

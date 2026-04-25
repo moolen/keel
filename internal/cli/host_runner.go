@@ -20,6 +20,7 @@ type machineRunner interface {
 type HostRunner struct {
 	RuntimeDir        string
 	WorkspacePreparer func(workspace.PrepareOptions) (workspace.PrepareResult, error)
+	PullImage         func(context.Context, string, string) (image.PullResult, error)
 	MachineFactory    func(config.Config, vm.RuntimeAssets) machineRunner
 }
 
@@ -46,7 +47,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		return err
 	}
 
-	assets, err := r.prepareAssets(req.Config)
+	assets, err := r.prepareAssets(ctx, req.Config)
 	if err != nil {
 		return err
 	}
@@ -60,9 +61,23 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	return machine.Run(ctx)
 }
 
-func (r HostRunner) prepareAssets(cfg config.Config) (vm.RuntimeAssets, error) {
+func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.RuntimeAssets, error) {
 	layout, err := image.ResolveCacheLayout(cfg.ImageCacheDir, cfg.Image)
 	if err != nil {
+		return vm.RuntimeAssets{}, err
+	}
+	if _, err := os.Stat(layout.RootfsPath); os.IsNotExist(err) {
+		pull := r.PullImage
+		if pull == nil {
+			puller := image.Puller{}
+			pull = puller.PullAndCache
+		}
+		result, err := pull(ctx, cfg.ImageCacheDir, cfg.Image)
+		if err != nil {
+			return vm.RuntimeAssets{}, err
+		}
+		layout = result.Layout
+	} else if err != nil {
 		return vm.RuntimeAssets{}, err
 	}
 	runtimeDir := r.runtimeDir()
