@@ -293,6 +293,96 @@ func TestHostRunnerAllocatesUniqueRuntimeDirByDefault(t *testing.T) {
 	}
 }
 
+func TestHostRunnerSyncsWorkspaceAfterCommandExit(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	cfg.Workspace.SyncBack = true
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var syncOpts workspace.ImageSyncOptions
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		SyncWorkspace: func(opts workspace.ImageSyncOptions) (workspace.SyncResult, error) {
+			syncOpts = opts
+			return workspace.SyncResult{Applied: true}, nil
+		},
+		MachineFactory: func(_ config.Config, assets vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{
+		Config:  cfg,
+		Command: []string{"/bin/sh"},
+		Stdin:   strings.NewReader("y\n"),
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if syncOpts.HostDir != cfg.Workspace.Mount {
+		t.Fatalf("sync host dir = %q, want %q", syncOpts.HostDir, cfg.Workspace.Mount)
+	}
+	if syncOpts.ImagePath == "" {
+		t.Fatal("sync image path should not be empty")
+	}
+	if !syncOpts.Confirm {
+		t.Fatal("sync confirm should follow workspace config")
+	}
+}
+
+func TestHostRunnerReturnsSyncErrorAfterSuccessfulRun(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	cfg.Workspace.SyncBack = true
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		SyncWorkspace: func(opts workspace.ImageSyncOptions) (workspace.SyncResult, error) {
+			return workspace.SyncResult{}, errors.New("sync failed")
+		},
+		MachineFactory: func(_ config.Config, assets vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}})
+	if err == nil || !strings.Contains(err.Error(), "sync failed") {
+		t.Fatalf("Run() error = %v, want sync failure", err)
+	}
+}
+
 func TestHostRunnerStartServicesStartsDNSAndTCPProxies(t *testing.T) {
 	runner := HostRunner{}
 	assets := vm.RuntimeAssets{

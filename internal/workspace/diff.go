@@ -20,6 +20,10 @@ type Diff struct {
 	Deleted  []Change
 }
 
+func (d Diff) Empty() bool {
+	return len(d.Added) == 0 && len(d.Modified) == 0 && len(d.Deleted) == 0
+}
+
 func DiffDirectories(hostDir, vmDir string) (Diff, error) {
 	hostFiles, err := scanDir(hostDir)
 	if err != nil {
@@ -56,6 +60,9 @@ func scanDir(root string) (map[string][32]byte, error) {
 	files := map[string][32]byte{}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
+			if os.IsPermission(err) {
+				return nil
+			}
 			return err
 		}
 		if entry.IsDir() {

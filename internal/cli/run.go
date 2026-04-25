@@ -10,6 +10,7 @@ import (
 type RunRequest struct {
 	Config  config.Config
 	Command []string
+	Stdin   io.Reader
 	Stdout  io.Writer
 	Stderr  io.Writer
 }

@@ -62,6 +62,7 @@ func NewRootCommand(deps Dependencies) *cobra.Command {
 			return runner.Run(cmd.Context(), RunRequest{
 				Config:  cfg,
 				Command: args,
+				Stdin:   cmd.InOrStdin(),
 				Stdout:  cmd.OutOrStdout(),
 				Stderr:  cmd.ErrOrStderr(),
 			})

@@ -24,6 +24,7 @@ type HostRunner struct {
 	RuntimeDir        string
 	EnsureKernel      func(context.Context, string) (string, error)
 	WorkspacePreparer func(workspace.PrepareOptions) (workspace.PrepareResult, error)
+	SyncWorkspace     func(workspace.ImageSyncOptions) (workspace.SyncResult, error)
 	PullImage         func(context.Context, string, string) (image.PullResult, error)
 	MachineFactory    func(config.Config, vm.RuntimeAssets) machineRunner
 	PrepareFeatures   func(string, []config.FeatureConfig) error
@@ -69,7 +70,16 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		}
 	}
 	machine := factory(req.Config, assets)
-	return machine.Run(ctx)
+	runErr := machine.Run(ctx)
+	syncErr := r.syncWorkspace(req, assets)
+	switch {
+	case runErr != nil && syncErr != nil:
+		return fmt.Errorf("%w (workspace sync: %v)", runErr, syncErr)
+	case runErr != nil:
+		return runErr
+	default:
+		return syncErr
+	}
 }
 
 func (r HostRunner) warnKernelNetworkLimitations(req RunRequest, assets vm.RuntimeAssets) {
@@ -227,6 +237,29 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 		LogPath:       filepath.Join(runtimeDir, "firecracker.log"),
 		CID:           52,
 	}, nil
+}
+
+func (r HostRunner) syncWorkspace(req RunRequest, assets vm.RuntimeAssets) error {
+	if !req.Config.Workspace.SyncBack {
+		return nil
+	}
+	syncWorkspace := r.SyncWorkspace
+	if syncWorkspace == nil {
+		syncWorkspace = workspace.SyncImage
+	}
+	hostDir := req.Config.Workspace.Mount
+	if hostDir == "" {
+		hostDir = "."
+	}
+	_, err := syncWorkspace(workspace.ImageSyncOptions{
+		HostDir:     hostDir,
+		ImagePath:   assets.WorkspacePath,
+		SyncDeletes: req.Config.Workspace.SyncDeletes,
+		Confirm:     req.Config.Workspace.SyncConfirm,
+		In:          req.Stdin,
+		Out:         req.Stderr,
+	})
+	return err
 }
 
 func (r HostRunner) prepareFeatures(rootfsPath string, configured []config.FeatureConfig) error {
