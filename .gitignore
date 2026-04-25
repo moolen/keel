@@ -1,0 +1,11 @@
+.cache/
+.tmp/
+bin/
+dist/
+cover.out
+*.img
+*.qcow2
+*.ext4
+*.sock
+*.log
+
