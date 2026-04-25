@@ -1,0 +1,35 @@
+image: ubuntu:24.04
+
+resources:
+  vcpu: 2
+  memory_mb: 2048
+  disk_mb: 4096
+
+workspace:
+  mount: .
+  target: /workspace
+  sync_back: false
+  sync_deletes: false
+  sync_confirm: true
+
+network:
+  mode: vsock
+  deny_if_no_sni: false
+  dns:
+    allowed:
+      - "*.github.com"
+  tcp:
+    allowed_cidrs: []
+    denied_cidrs: []
+  tls:
+    allowed_sni:
+      - "*.github.com"
+
+features:
+  - name: docker
+    config:
+      storage_driver: overlay2
+
+env:
+  TERM: xterm-256color
+
