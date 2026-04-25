@@ -1,0 +1,83 @@
+package vm
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestKernelManagerEnsureDownloadsLatestKernel(t *testing.T) {
+	destPath := t.TempDir() + "/vmlinux"
+	manager := KernelManager{
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case strings.Contains(req.URL.String(), "list-type=2"):
+				return stringResponse(`<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult>
+  <Contents><Key>firecracker-ci/v1.15/x86_64/vmlinux-5.10.245</Key></Contents>
+  <Contents><Key>firecracker-ci/v1.15/x86_64/vmlinux-6.1.155</Key></Contents>
+  <Contents><Key>firecracker-ci/v1.15/x86_64/vmlinux-6.1.155.config</Key></Contents>
+</ListBucketResult>`), nil
+			case strings.HasSuffix(req.URL.String(), "/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155"):
+				return stringResponse("kernel-bytes"), nil
+			default:
+				t.Fatalf("unexpected URL: %s", req.URL.String())
+				return nil, nil
+			}
+		})},
+		FirecrackerVersion: func(context.Context) (string, error) {
+			return "Firecracker v1.15.1", nil
+		},
+		Arch: "x86_64",
+	}
+
+	gotPath, err := manager.Ensure(context.Background(), destPath)
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if gotPath != destPath {
+		t.Fatalf("Ensure() path = %q, want %q", gotPath, destPath)
+	}
+	data, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != "kernel-bytes" {
+		t.Fatalf("kernel data = %q, want kernel-bytes", string(data))
+	}
+}
+
+func TestKernelManagerRespectsExistingKernel(t *testing.T) {
+	destPath := t.TempDir() + "/vmlinux"
+	if err := os.WriteFile(destPath, []byte("existing"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	manager := KernelManager{
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			t.Fatalf("unexpected HTTP request: %s", req.URL.String())
+			return nil, nil
+		})},
+	}
+
+	if _, err := manager.Ensure(context.Background(), destPath); err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func stringResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
+}

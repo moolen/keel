@@ -19,6 +19,7 @@ type machineRunner interface {
 
 type HostRunner struct {
 	RuntimeDir        string
+	EnsureKernel      func(context.Context, string) (string, error)
 	WorkspacePreparer func(workspace.PrepareOptions) (workspace.PrepareResult, error)
 	PullImage         func(context.Context, string, string) (image.PullResult, error)
 	MachineFactory    func(config.Config, vm.RuntimeAssets) machineRunner
@@ -62,6 +63,16 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 }
 
 func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.RuntimeAssets, error) {
+	ensureKernel := r.EnsureKernel
+	if ensureKernel == nil {
+		manager := vm.KernelManager{}
+		ensureKernel = manager.Ensure
+	}
+	kernelPath, err := ensureKernel(ctx, cfg.Kernel.Path)
+	if err != nil {
+		return vm.RuntimeAssets{}, err
+	}
+
 	layout, err := image.ResolveCacheLayout(cfg.ImageCacheDir, cfg.Image)
 	if err != nil {
 		return vm.RuntimeAssets{}, err
@@ -105,7 +116,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	}
 
 	return vm.RuntimeAssets{
-		KernelPath:    cfg.Kernel.Path,
+		KernelPath:    kernelPath,
 		RootfsPath:    layout.RootfsPath,
 		WorkspacePath: workspacePath,
 		SocketPath:    filepath.Join(runtimeDir, "firecracker.sock"),

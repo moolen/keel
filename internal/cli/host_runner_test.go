@@ -58,6 +58,9 @@ func TestHostRunnerPreparesAssetsBeforeLaunch(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
 		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
 			prepareOpts = opts
 			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
@@ -88,6 +91,9 @@ func TestHostRunnerReturnsWorkspacePrepareError(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: t.TempDir(),
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return "/tmp/vmlinux", nil
+		},
 		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
 			return workspace.PrepareResult{}, errors.New("boom")
 		},
@@ -112,6 +118,9 @@ func TestHostRunnerAutoPullsMissingRootfs(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
 		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
 			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
 		},
