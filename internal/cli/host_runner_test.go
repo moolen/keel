@@ -247,6 +247,52 @@ func TestHostRunnerWarnsWhenUsingDefaultKernelWithNetworkPolicy(t *testing.T) {
 	}
 }
 
+func TestHostRunnerAllocatesUniqueRuntimeDirByDefault(t *testing.T) {
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = t.TempDir()
+	cfg.Workspace.Mount = t.TempDir()
+
+	rootfsPath := filepath.Join(cfg.ImageCacheDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var preparePaths []string
+	runner := HostRunner{
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(t.TempDir(), "vmlinux"), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			preparePaths = append(preparePaths, opts.ImagePath)
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	for range 2 {
+		if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	}
+	if len(preparePaths) != 2 {
+		t.Fatalf("preparePaths = %d, want 2", len(preparePaths))
+	}
+	if preparePaths[0] == preparePaths[1] {
+		t.Fatalf("workspace paths should differ, got %q", preparePaths[0])
+	}
+	for _, path := range preparePaths {
+		if !strings.Contains(filepath.Base(filepath.Dir(path)), "keel-runtime-") {
+			t.Fatalf("workspace path = %q, want generated keel-runtime directory", path)
+		}
+	}
+}
+
 func TestHostRunnerStartServicesStartsDNSAndTCPProxies(t *testing.T) {
 	runner := HostRunner{}
 	assets := vm.RuntimeAssets{

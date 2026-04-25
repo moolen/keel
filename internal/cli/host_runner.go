@@ -29,11 +29,11 @@ type HostRunner struct {
 	PrepareFeatures   func(string, []config.FeatureConfig) error
 }
 
-func (r HostRunner) runtimeDir() string {
+func (r HostRunner) runtimeDir() (string, error) {
 	if r.RuntimeDir != "" {
-		return r.RuntimeDir
+		return r.RuntimeDir, nil
 	}
-	return filepath.Join(os.TempDir(), "keel-runtime")
+	return os.MkdirTemp(os.TempDir(), "keel-runtime-*")
 }
 
 func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
@@ -191,7 +191,10 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	if err := r.prepareFeatures(layout.RootfsPath, cfg.Features); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
-	runtimeDir := r.runtimeDir()
+	runtimeDir, err := r.runtimeDir()
+	if err != nil {
+		return vm.RuntimeAssets{}, err
+	}
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
