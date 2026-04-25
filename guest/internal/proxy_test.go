@@ -64,6 +64,12 @@ func TestShouldUseOriginalDestination(t *testing.T) {
 	}
 }
 
+func TestTCPProxyListensOnAllInterfaces(t *testing.T) {
+	if got, want := tcpProxyAddr, "0.0.0.0:3128"; got != want {
+		t.Fatalf("tcpProxyAddr = %q, want %q", got, want)
+	}
+}
+
 func envMap(env []string) map[string]string {
 	out := make(map[string]string, len(env))
 	for _, entry := range env {

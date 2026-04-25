@@ -54,6 +54,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	if err != nil {
 		return err
 	}
+	r.warnKernelNetworkLimitations(req, assets)
 	stopServices, err := r.startServices(ctx, req.Config, assets)
 	if err != nil {
 		return err
@@ -67,6 +68,30 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	}
 	machine := factory(req.Config, assets)
 	return machine.Run(ctx)
+}
+
+func (r HostRunner) warnKernelNetworkLimitations(req RunRequest, assets vm.RuntimeAssets) {
+	if !networkPolicyConfigured(req.Config) {
+		return
+	}
+	if assets.KernelPath != vm.DefaultKernelPath() {
+		return
+	}
+	stderr := req.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	_, _ = fmt.Fprintln(stderr, "warning: transparent tcp redirect is unavailable on the default kernel; using explicit proxy fallback for compatible clients until you provide a custom kernel with netfilter support")
+}
+
+func networkPolicyConfigured(cfg config.Config) bool {
+	return len(cfg.Network.DNS.Allowed) > 0 ||
+		len(cfg.Network.DNS.Denied) > 0 ||
+		len(cfg.Network.TCP.AllowedCIDRs) > 0 ||
+		len(cfg.Network.TCP.DeniedCIDRs) > 0 ||
+		len(cfg.Network.TLS.AllowedSNI) > 0 ||
+		len(cfg.Network.TLS.DeniedSNI) > 0 ||
+		cfg.Network.DenyIfNoSNI
 }
 
 func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets vm.RuntimeAssets) (func(), error) {

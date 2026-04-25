@@ -22,7 +22,7 @@ import (
 
 const (
 	tcpProxyPort = 3128
-	tcpProxyAddr = "127.0.0.1:3128"
+	tcpProxyAddr = "0.0.0.0:3128"
 )
 
 func StartTCPProxy(ctx context.Context) error {

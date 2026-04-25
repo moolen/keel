@@ -152,6 +152,49 @@ func TestHostRunnerAutoPullsMissingRootfs(t *testing.T) {
 	}
 }
 
+func TestHostRunnerWarnsWhenUsingDefaultKernelWithNetworkPolicy(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	cfg.Network.DNS.Allowed = []string{"github.com"}
+
+	var stderr bytes.Buffer
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return vm.DefaultKernelPath(), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	err := runner.Run(context.Background(), RunRequest{
+		Config:  cfg,
+		Command: []string{"/bin/sh"},
+		Stderr:  &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(stderr.String(), "transparent tcp redirect is unavailable on the default kernel") {
+		t.Fatalf("stderr = %q, want transparent redirect warning", stderr.String())
+	}
+}
+
 func TestHostRunnerStartServicesStartsDNSAndTCPProxies(t *testing.T) {
 	runner := HostRunner{}
 	assets := vm.RuntimeAssets{
