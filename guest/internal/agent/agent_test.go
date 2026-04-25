@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseKernelCommandLine(t *testing.T) {
-	cmdline := "console=ttyS0 keel.cmd=WyIvYmluL3NoIiwiLWxjIiwiZWNobyBoaSJd keel.cwd=/workspace"
+	cmdline := "console=ttyS0 keel.cmd=WyIvYmluL3NoIiwiLWxjIiwiZWNobyBoaSJd keel.cwd=/workspace keel.features=W3sibmFtZSI6ImRvY2tlciIsImNvbmZpZyI6eyJzdG9yYWdlX2RyaXZlciI6InZmcyJ9fV0"
 
 	cfg, err := parseKernelCommandLine(cmdline)
 	if err != nil {
@@ -19,6 +19,9 @@ func TestParseKernelCommandLine(t *testing.T) {
 	wantCommand := []string{"/bin/sh", "-lc", "echo hi"}
 	if !reflect.DeepEqual(cfg.Command, wantCommand) {
 		t.Fatalf("Command = %#v, want %#v", cfg.Command, wantCommand)
+	}
+	if len(cfg.Features) != 1 || cfg.Features[0].Name != "docker" {
+		t.Fatalf("Features = %#v", cfg.Features)
 	}
 }
 
@@ -32,8 +35,8 @@ func TestRunInitDefaultsToShellAndPowersOff(t *testing.T) {
 			gotDir = dir
 			return nil
 		},
-		runCommand: func(command []string, _ []string) error {
-			gotCommand = append([]string(nil), command...)
+		runCommand: func(cfg bootConfig, _ []string) error {
+			gotCommand = append([]string(nil), cfg.Command...)
 			return nil
 		},
 		powerOff: func() error {
@@ -62,7 +65,7 @@ func TestRunInitReturnsCommandErrorWithoutPowerOff(t *testing.T) {
 
 	err := runInit(bootConfig{Command: []string{"/bin/false"}}, initOps{
 		chdir: func(string) error { return nil },
-		runCommand: func(_ []string, _ []string) error {
+		runCommand: func(_ bootConfig, _ []string) error {
 			return commandErr
 		},
 		powerOff: func() error {
@@ -111,4 +114,14 @@ func TestBootMountsCoreFilesystemsBeforeLoadingConfig(t *testing.T) {
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %#v, want %#v", calls, wantCalls)
 	}
+}
+
+func TestCoreMountsIncludesCgroup2(t *testing.T) {
+	mounts := coreMounts()
+	for _, mount := range mounts {
+		if mount.target == "/sys/fs/cgroup" && mount.fstype == "cgroup2" {
+			return
+		}
+	}
+	t.Fatalf("coreMounts() = %#v, want cgroup2 mount", mounts)
 }

@@ -3,9 +3,11 @@ package internal
 import (
 	"context"
 	"os"
+
+	guestfeatures "github.com/moolen/keel/guest/internal/features"
 )
 
-func Bootstrap(command []string, env []string) error {
+func Bootstrap(command []string, env []string, configured []guestfeatures.ConfiguredFeature) error {
 	if len(command) == 0 {
 		command = []string{"/bin/sh"}
 	}
@@ -24,5 +26,9 @@ func Bootstrap(command []string, env []string) error {
 	if err := StartTCPProxy(ctx); err != nil {
 		return err
 	}
-	return ServePTY(command, cwd, proxyEnvironment(env))
+	proxyEnv := proxyEnvironment(env)
+	if err := (guestfeatures.Runner{}).RunConfigured(ctx, configured, proxyEnv); err != nil {
+		return err
+	}
+	return ServePTY(command, cwd, proxyEnv)
 }

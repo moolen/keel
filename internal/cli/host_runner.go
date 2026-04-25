@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/moolen/keel/internal/config"
+	keelfeatures "github.com/moolen/keel/internal/features"
 	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/network"
 	"github.com/moolen/keel/internal/vm"
@@ -25,6 +26,7 @@ type HostRunner struct {
 	WorkspacePreparer func(workspace.PrepareOptions) (workspace.PrepareResult, error)
 	PullImage         func(context.Context, string, string) (image.PullResult, error)
 	MachineFactory    func(config.Config, vm.RuntimeAssets) machineRunner
+	PrepareFeatures   func(string, []config.FeatureConfig) error
 }
 
 func (r HostRunner) runtimeDir() string {
@@ -186,6 +188,9 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	} else if err != nil {
 		return vm.RuntimeAssets{}, err
 	}
+	if err := r.prepareFeatures(layout.RootfsPath, cfg.Features); err != nil {
+		return vm.RuntimeAssets{}, err
+	}
 	runtimeDir := r.runtimeDir()
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		return vm.RuntimeAssets{}, err
@@ -219,6 +224,33 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 		LogPath:       filepath.Join(runtimeDir, "firecracker.log"),
 		CID:           52,
 	}, nil
+}
+
+func (r HostRunner) prepareFeatures(rootfsPath string, configured []config.FeatureConfig) error {
+	if len(configured) == 0 {
+		return nil
+	}
+	prepare := r.PrepareFeatures
+	if prepare == nil {
+		registry := keelfeatures.NewRegistry()
+		if err := registry.Register(keelfeatures.NewDockerFeature()); err != nil {
+			return err
+		}
+		prepare = func(rootfsPath string, configured []config.FeatureConfig) error {
+			items := make([]keelfeatures.ConfiguredFeature, 0, len(configured))
+			for _, feature := range configured {
+				items = append(items, keelfeatures.ConfiguredFeature{
+					Name:   feature.Name,
+					Config: feature.Config,
+				})
+			}
+			if err := registry.Validate(items); err != nil {
+				return err
+			}
+			return registry.PrepareRootfs(rootfsPath, items)
+		}
+	}
+	return prepare(rootfsPath, configured)
 }
 
 func max(a, b int) int {

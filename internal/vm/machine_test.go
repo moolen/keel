@@ -71,6 +71,38 @@ func TestBuildConfigUsesRuntimeAssets(t *testing.T) {
 	}
 }
 
+func TestBuildConfigEncodesFeaturesInKernelArgs(t *testing.T) {
+	cfg := config.Default()
+	cfg.Features = []config.FeatureConfig{{
+		Name: "docker",
+		Config: map[string]any{
+			"storage_driver": "vfs",
+		},
+	}}
+
+	machine := NewMachine(cfg, RuntimeAssets{
+		KernelPath:    "/tmp/vmlinux",
+		RootfsPath:    "/tmp/rootfs.ext4",
+		WorkspacePath: "/tmp/workspace.ext4",
+		SocketPath:    "/tmp/firecracker.sock",
+		VSockPath:     "/tmp/firecracker.vsock",
+		LogPath:       "/tmp/firecracker.log",
+		CID:           52,
+	})
+
+	fcCfg, err := machine.BuildConfig()
+	if err != nil {
+		t.Fatalf("BuildConfig() error = %v", err)
+	}
+	features := decodeKernelFeatures(t, fcCfg.KernelArgs)
+	if len(features) != 1 || features[0].Name != "docker" {
+		t.Fatalf("decoded features = %#v", features)
+	}
+	if got := features[0].Config["storage_driver"]; got != "vfs" {
+		t.Fatalf("decoded storage_driver = %#v, want vfs", got)
+	}
+}
+
 func TestBuildConfigIncludesGuestNetworkInterface(t *testing.T) {
 	cfg := config.Default()
 
@@ -241,5 +273,26 @@ func decodeKernelCommand(t *testing.T, kernelArgs string) []string {
 		return command
 	}
 	t.Fatalf("keel.cmd not found in %q", kernelArgs)
+	return nil
+}
+
+func decodeKernelFeatures(t *testing.T, kernelArgs string) []config.FeatureConfig {
+	t.Helper()
+	for _, field := range strings.Fields(kernelArgs) {
+		if !strings.HasPrefix(field, "keel.features=") {
+			continue
+		}
+		encoded := strings.TrimPrefix(field, "keel.features=")
+		data, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatalf("DecodeString() error = %v", err)
+		}
+		var features []config.FeatureConfig
+		if err := json.Unmarshal(data, &features); err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		return features
+	}
+	t.Fatalf("keel.features not found in %q", kernelArgs)
 	return nil
 }

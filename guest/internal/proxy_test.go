@@ -26,6 +26,13 @@ func TestProxyEnvironmentSetsLocalProxyVariables(t *testing.T) {
 	}
 }
 
+func TestProxyEnvironmentAddsDefaultPath(t *testing.T) {
+	values := envMap(proxyEnvironment(nil))
+	if got, want := values["PATH"], "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"; got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
+	}
+}
+
 func TestParseConnectDestination(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("CONNECT api.github.com:443 HTTP/1.1\r\nHost: api.github.com:443\r\n\r\n"))
 

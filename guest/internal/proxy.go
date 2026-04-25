@@ -219,6 +219,7 @@ func guestCloseWrite(conn net.Conn) {
 
 func proxyEnvironment(base []string) []string {
 	env := make([]string, 0, len(base)+7)
+	hasPath := false
 	skip := map[string]struct{}{
 		"HTTP_PROXY":  {},
 		"HTTPS_PROXY": {},
@@ -232,10 +233,16 @@ func proxyEnvironment(base []string) []string {
 		if idx := strings.IndexByte(entry, '='); idx >= 0 {
 			key = entry[:idx]
 		}
+		if key == "PATH" {
+			hasPath = true
+		}
 		if _, drop := skip[key]; drop {
 			continue
 		}
 		env = append(env, entry)
+	}
+	if !hasPath {
+		env = append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	}
 
 	proxyURL := "http://127.0.0.1:3128"

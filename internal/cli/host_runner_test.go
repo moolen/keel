@@ -152,6 +152,58 @@ func TestHostRunnerAutoPullsMissingRootfs(t *testing.T) {
 	}
 }
 
+func TestHostRunnerAppliesConfiguredFeaturesBeforeLaunch(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "docker:28-dind"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	cfg.Features = []config.FeatureConfig{{
+		Name: "docker",
+		Config: map[string]any{
+			"storage_driver": "vfs",
+		},
+	}}
+
+	var gotRootfsPath string
+	var gotFeatures []config.FeatureConfig
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "docker", "28-dind", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		PrepareFeatures: func(rootfsPath string, configured []config.FeatureConfig) error {
+			gotRootfsPath = rootfsPath
+			gotFeatures = append([]config.FeatureConfig(nil), configured...)
+			return nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if gotRootfsPath != rootfsPath {
+		t.Fatalf("PrepareFeatures rootfs = %q, want %q", gotRootfsPath, rootfsPath)
+	}
+	if len(gotFeatures) != 1 || gotFeatures[0].Name != "docker" {
+		t.Fatalf("PrepareFeatures features = %#v", gotFeatures)
+	}
+}
+
 func TestHostRunnerWarnsWhenUsingDefaultKernelWithNetworkPolicy(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := config.Default()

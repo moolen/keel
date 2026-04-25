@@ -2,7 +2,9 @@ package features
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
+	"os/exec"
+	"strings"
 )
 
 type DockerFeature struct{}
@@ -31,8 +33,36 @@ func (DockerFeature) ValidateConfig(raw map[string]any) error {
 			return err
 		}
 	}
-	if cfg.StorageDriver == "" {
-		return errors.New("storage_driver is required")
+	return nil
+}
+
+func (DockerFeature) PrepareRootfs(rootfsPath string, _ map[string]any) error {
+	if rootfsPath == "" {
+		return fmt.Errorf("rootfs path is required")
+	}
+	missing := make([]string, 0, 2)
+	for _, candidate := range []string{"/usr/local/bin/docker", "/usr/bin/docker"} {
+		if rootfsContainsPath(rootfsPath, candidate) {
+			goto foundDocker
+		}
+	}
+	missing = append(missing, "docker")
+foundDocker:
+	for _, candidate := range []string{"/usr/local/bin/dockerd", "/usr/bin/dockerd"} {
+		if rootfsContainsPath(rootfsPath, candidate) {
+			goto foundDockerd
+		}
+	}
+	missing = append(missing, "dockerd")
+foundDockerd:
+	if len(missing) > 0 {
+		return fmt.Errorf("docker feature requires %s in the image rootfs; use a Docker-enabled base image", strings.Join(missing, " and "))
 	}
 	return nil
+}
+
+func rootfsContainsPath(rootfsPath, target string) bool {
+	cmd := exec.Command("debugfs", "-R", "stat "+target, rootfsPath)
+	output, err := cmd.CombinedOutput()
+	return err == nil && !strings.Contains(string(output), "File not found")
 }

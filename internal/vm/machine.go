@@ -120,6 +120,12 @@ func (m *Machine) kernelArgs() string {
 			args = append(args, "keel.cmd="+encoded)
 		}
 	}
+	if len(m.Config.Features) > 0 {
+		encoded, err := encodeKernelFeatures(m.Config.Features)
+		if err == nil && encoded != "" {
+			args = append(args, "keel.features="+encoded)
+		}
+	}
 	target := m.Config.Workspace.Target
 	if target == "" {
 		target = "/workspace"
@@ -130,6 +136,14 @@ func (m *Machine) kernelArgs() string {
 
 func encodeKernelCommand(command []string) (string, error) {
 	data, err := json.Marshal(command)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func encodeKernelFeatures(features []config.FeatureConfig) (string, error) {
+	data, err := json.Marshal(features)
 	if err != nil {
 		return "", err
 	}

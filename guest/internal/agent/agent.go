@@ -11,16 +11,18 @@ import (
 	"time"
 
 	guestinternal "github.com/moolen/keel/guest/internal"
+	guestfeatures "github.com/moolen/keel/guest/internal/features"
 )
 
 type bootConfig struct {
-	Command []string
-	WorkDir string
+	Command  []string
+	WorkDir  string
+	Features []guestfeatures.ConfiguredFeature
 }
 
 type initOps struct {
 	chdir      func(string) error
-	runCommand func([]string, []string) error
+	runCommand func(bootConfig, []string) error
 	powerOff   func() error
 }
 
@@ -90,30 +92,27 @@ func parseKernelCommandLine(cmdline string) (bootConfig, error) {
 			}
 		case strings.HasPrefix(field, "keel.cwd="):
 			cfg.WorkDir = strings.TrimPrefix(field, "keel.cwd=")
+		case strings.HasPrefix(field, "keel.features="):
+			encoded := strings.TrimPrefix(field, "keel.features=")
+			data, err := base64.RawURLEncoding.DecodeString(encoded)
+			if err != nil {
+				return bootConfig{}, err
+			}
+			if err := json.Unmarshal(data, &cfg.Features); err != nil {
+				return bootConfig{}, err
+			}
 		}
 	}
 	return cfg, nil
 }
 
 func mountCoreFilesystems() error {
-	for _, dir := range []string{"/proc", "/sys", "/dev", "/dev/pts", "/run"} {
+	for _, dir := range []string{"/proc", "/sys", "/sys/fs/cgroup", "/dev", "/dev/pts", "/run"} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	mounts := []struct {
-		source string
-		target string
-		fstype string
-		flags  uintptr
-		data   string
-	}{
-		{"proc", "/proc", "proc", 0, ""},
-		{"sysfs", "/sys", "sysfs", 0, ""},
-		{"devtmpfs", "/dev", "devtmpfs", 0, "mode=0755"},
-		{"devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666,mode=0620"},
-	}
-	for _, mount := range mounts {
+	for _, mount := range coreMounts() {
 		if err := syscall.Mount(mount.source, mount.target, mount.fstype, mount.flags, mount.data); err != nil && err != syscall.EBUSY {
 			return err
 		}
@@ -122,6 +121,24 @@ func mountCoreFilesystems() error {
 		return err
 	}
 	return nil
+}
+
+type coreMount struct {
+	source string
+	target string
+	fstype string
+	flags  uintptr
+	data   string
+}
+
+func coreMounts() []coreMount {
+	return []coreMount{
+		{"proc", "/proc", "proc", 0, ""},
+		{"sysfs", "/sys", "sysfs", 0, ""},
+		{"cgroup2", "/sys/fs/cgroup", "cgroup2", 0, ""},
+		{"devtmpfs", "/dev", "devtmpfs", 0, "mode=0755"},
+		{"devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666,mode=0620"},
+	}
 }
 
 func ensurePTMXSymlink() error {
@@ -190,14 +207,14 @@ func runInit(cfg bootConfig, ops initOps) error {
 	if len(cfg.Command) == 0 {
 		cfg.Command = []string{"/bin/sh"}
 	}
-	if err := ops.runCommand(cfg.Command, os.Environ()); err != nil {
+	if err := ops.runCommand(cfg, os.Environ()); err != nil {
 		return err
 	}
 	return ops.powerOff()
 }
 
-func runCommand(command []string, env []string) error {
-	return guestinternal.Bootstrap(command, env)
+func runCommand(cfg bootConfig, env []string) error {
+	return guestinternal.Bootstrap(cfg.Command, env, cfg.Features)
 }
 
 func powerOff() error {

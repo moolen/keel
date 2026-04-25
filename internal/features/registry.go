@@ -13,6 +13,7 @@ type ConfiguredFeature struct {
 type Feature interface {
 	Name() string
 	ValidateConfig(map[string]any) error
+	PrepareRootfs(string, map[string]any) error
 }
 
 type Registry struct {
@@ -38,6 +39,19 @@ func (r *Registry) Validate(configured []ConfiguredFeature) error {
 			return fmt.Errorf("unknown feature %q (available: %v)", item.Name, r.Names())
 		}
 		if err := feature.ValidateConfig(item.Config); err != nil {
+			return fmt.Errorf("feature %q: %w", item.Name, err)
+		}
+	}
+	return nil
+}
+
+func (r *Registry) PrepareRootfs(rootfsPath string, configured []ConfiguredFeature) error {
+	for _, item := range configured {
+		feature, ok := r.features[item.Name]
+		if !ok {
+			return fmt.Errorf("unknown feature %q (available: %v)", item.Name, r.Names())
+		}
+		if err := feature.PrepareRootfs(rootfsPath, item.Config); err != nil {
 			return fmt.Errorf("feature %q: %w", item.Name, err)
 		}
 	}
