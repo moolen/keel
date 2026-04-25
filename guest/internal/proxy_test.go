@@ -44,6 +44,26 @@ func TestParseConnectDestination(t *testing.T) {
 	}
 }
 
+func TestShouldUseOriginalDestination(t *testing.T) {
+	cases := []struct {
+		name        string
+		destination string
+		want        bool
+	}{
+		{name: "external target", destination: "203.0.113.10:443", want: true},
+		{name: "local proxy target", destination: "127.0.0.1:3128", want: false},
+		{name: "ipv6 local proxy target", destination: "[::1]:3128", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldUseOriginalDestination(tc.destination); got != tc.want {
+				t.Fatalf("shouldUseOriginalDestination(%q) = %v, want %v", tc.destination, got, tc.want)
+			}
+		})
+	}
+}
+
 func envMap(env []string) map[string]string {
 	out := make(map[string]string, len(env))
 	for _, entry := range env {

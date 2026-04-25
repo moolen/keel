@@ -2,15 +2,22 @@ package internal
 
 import (
 	"bufio"
+	"encoding/binary"
 	"context"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"unsafe"
 
+	"github.com/google/nftables"
+	"github.com/google/nftables/binaryutil"
+	"github.com/google/nftables/expr"
 	"github.com/mdlayher/vsock"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -19,6 +26,10 @@ const (
 )
 
 func StartTCPProxy(ctx context.Context) error {
+	if err := ensureTransparentTCPRedirect(); err != nil {
+		log.Printf("transparent tcp redirect unavailable: %v", err)
+	}
+
 	listener, err := net.Listen("tcp", tcpProxyAddr)
 	if err != nil {
 		return err
@@ -51,6 +62,15 @@ func StartTCPProxy(ctx context.Context) error {
 }
 
 func handleProxyConn(ctx context.Context, client net.Conn) error {
+	if destination, err := originalDestination(client); err == nil && shouldUseOriginalDestination(destination) {
+		upstream, err := connectTCPProxy(destination)
+		if err != nil {
+			return err
+		}
+		defer upstream.Close()
+		return bridgeGuestProxy(client, upstream)
+	}
+
 	reader := bufio.NewReader(client)
 	target, connect, req, err := parseProxyRequest(reader)
 	if err != nil {
@@ -62,15 +82,11 @@ func handleProxyConn(ctx context.Context, client net.Conn) error {
 		return err
 	}
 
-	upstream, err := vsock.Dial(hostCID, tcpProxyPort, nil)
+	upstream, err := connectTCPProxy(destination)
 	if err != nil {
 		return err
 	}
 	defer upstream.Close()
-
-	if err := writeDestinationHeader(upstream, destination); err != nil {
-		return err
-	}
 
 	if connect {
 		if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
@@ -93,6 +109,19 @@ func handleProxyConn(ctx context.Context, client net.Conn) error {
 	}
 
 	return bridgeGuestProxy(client, upstream)
+}
+
+func connectTCPProxy(destination string) (net.Conn, error) {
+	upstream, err := vsock.Dial(hostCID, tcpProxyPort, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := writeDestinationHeader(upstream, destination); err != nil {
+		_ = upstream.Close()
+		return nil, err
+	}
+	return upstream, nil
 }
 
 func parseProxyRequest(reader *bufio.Reader) (string, bool, *http.Request, error) {
@@ -223,4 +252,100 @@ func writeDestinationHeader(w io.Writer, destination string) error {
 	}
 	_, err := io.WriteString(w, destination)
 	return err
+}
+
+func shouldUseOriginalDestination(destination string) bool {
+	host, port, err := net.SplitHostPort(destination)
+	if err != nil {
+		return false
+	}
+	if port != strconv.Itoa(tcpProxyPort) {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
+}
+
+func originalDestination(conn net.Conn) (string, error) {
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		return "", fmt.Errorf("original destination requires *net.TCPConn, got %T", conn)
+	}
+
+	rawConn, err := tcpConn.SyscallConn()
+	if err != nil {
+		return "", err
+	}
+
+	var destination string
+	var controlErr error
+	if err := rawConn.Control(func(fd uintptr) {
+		destination, controlErr = getsockoptOriginalDestination(int(fd))
+	}); err != nil {
+		return "", err
+	}
+	if controlErr != nil {
+		return "", controlErr
+	}
+	return destination, nil
+}
+
+func getsockoptOriginalDestination(fd int) (string, error) {
+	var addr unix.RawSockaddrInet4
+	size := uint32(unsafe.Sizeof(addr))
+	_, _, errno := unix.Syscall6(
+		unix.SYS_GETSOCKOPT,
+		uintptr(fd),
+		uintptr(unix.SOL_IP),
+		uintptr(unix.SO_ORIGINAL_DST),
+		uintptr(unsafe.Pointer(&addr)),
+		uintptr(unsafe.Pointer(&size)),
+		0,
+	)
+	if errno != 0 {
+		return "", errno
+	}
+	ip := net.IPv4(addr.Addr[0], addr.Addr[1], addr.Addr[2], addr.Addr[3])
+	port := int(binary.BigEndian.Uint16((*[2]byte)(unsafe.Pointer(&addr.Port))[:]))
+	return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
+}
+
+func ensureTransparentTCPRedirect() error {
+	conn := &nftables.Conn{}
+
+	if existing, err := conn.ListTableOfFamily("keel", nftables.TableFamilyIPv4); err == nil {
+		conn.DelTable(existing)
+	}
+
+	table := conn.AddTable(&nftables.Table{
+		Family: nftables.TableFamilyIPv4,
+		Name:   "keel",
+	})
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     "output",
+		Table:    table,
+		Type:     nftables.ChainTypeNAT,
+		Hooknum:  nftables.ChainHookOutput,
+		Priority: nftables.ChainPriorityNATDest,
+	})
+	conn.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte{unix.IPPROTO_TCP},
+			},
+			&expr.Immediate{
+				Register: 1,
+				Data:     binaryutil.BigEndian.PutUint16(tcpProxyPort),
+			},
+			&expr.Redir{
+				RegisterProtoMin: 1,
+			},
+		},
+	})
+	return conn.Flush()
 }
