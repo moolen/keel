@@ -60,6 +60,8 @@ func NewRootCommand(deps Dependencies) *cobra.Command {
 			return runner.Run(cmd.Context(), RunRequest{
 				Config:  cfg,
 				Command: args,
+				Stdout:  cmd.OutOrStdout(),
+				Stderr:  cmd.ErrOrStderr(),
 			})
 		},
 	}
@@ -67,6 +69,6 @@ func NewRootCommand(deps Dependencies) *cobra.Command {
 	root.Flags().StringVar(&image, "image", "", "override the OCI image reference")
 	root.Flags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")
 	root.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen without booting a VM")
-	root.AddCommand(newImageCommand(), newConfigCommand())
+	root.AddCommand(newImageCommand(), newConfigCommand(deps))
 	return root
 }

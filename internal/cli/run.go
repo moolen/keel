@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"io"
 
 	"github.com/moolen/keel/internal/config"
 )
@@ -9,6 +10,8 @@ import (
 type RunRequest struct {
 	Config  config.Config
 	Command []string
+	Stdout  io.Writer
+	Stderr  io.Writer
 }
 
 type Runner interface {
