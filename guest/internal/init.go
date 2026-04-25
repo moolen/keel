@@ -1,6 +1,9 @@
 package internal
 
-import "os"
+import (
+	"context"
+	"os"
+)
 
 func Bootstrap(command []string, env []string) error {
 	if len(command) == 0 {
@@ -8,6 +11,11 @@ func Bootstrap(command []string, env []string) error {
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := StartDNSForwarder(ctx); err != nil {
 		return err
 	}
 	return ServePTY(command, cwd, env)

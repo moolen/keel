@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/moolen/keel/internal/config"
 	"github.com/moolen/keel/internal/image"
+	"github.com/moolen/keel/internal/network"
 	"github.com/moolen/keel/internal/vm"
 	"github.com/moolen/keel/internal/workspace"
 )
@@ -52,6 +54,11 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	if err != nil {
 		return err
 	}
+	stopServices, err := r.startServices(ctx, req.Config, assets)
+	if err != nil {
+		return err
+	}
+	defer stopServices()
 	factory := r.MachineFactory
 	if factory == nil {
 		factory = func(cfg config.Config, assets vm.RuntimeAssets) machineRunner {
@@ -60,6 +67,53 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	}
 	machine := factory(req.Config, assets)
 	return machine.Run(ctx)
+}
+
+func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets vm.RuntimeAssets) (func(), error) {
+	serviceCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan error, 1)
+
+	tracker := network.NewTracker(60 * time.Second)
+	engine := network.NewPolicyEngine(network.PolicyConfig{
+		DNS: network.RuleSet{
+			Allowed: cfg.Network.DNS.Allowed,
+			Denied:  cfg.Network.DNS.Denied,
+		},
+		TCP: network.CIDRRuleSet{
+			Allowed: cfg.Network.TCP.AllowedCIDRs,
+			Denied:  cfg.Network.TCP.DeniedCIDRs,
+		},
+		TLS: network.RuleSet{
+			Allowed: cfg.Network.TLS.AllowedSNI,
+			Denied:  cfg.Network.TLS.DeniedSNI,
+		},
+		DenyIfNoSNI: cfg.Network.DenyIfNoSNI,
+	}, tracker)
+	dnsProxy := network.DNSProxy{
+		Policy:  engine,
+		Tracker: tracker,
+	}
+	go func() {
+		errCh <- dnsProxy.Serve(serviceCtx, assets.VSockPath)
+	}()
+	socketPath := assets.VSockPath + "_3053"
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(socketPath); err == nil {
+			return cancel, nil
+		}
+		select {
+		case err := <-errCh:
+			cancel()
+			return nil, err
+		default:
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			return nil, fmt.Errorf("dns proxy did not start in time")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.RuntimeAssets, error) {
