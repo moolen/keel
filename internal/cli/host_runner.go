@@ -80,7 +80,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	if _, err := os.Stat(layout.RootfsPath); os.IsNotExist(err) {
 		pull := r.PullImage
 		if pull == nil {
-			puller := image.Puller{}
+			puller := image.Puller{GuestInit: defaultGuestAgentAssets}
 			pull = puller.PullAndCache
 		}
 		result, err := pull(ctx, cfg.ImageCacheDir, cfg.Image)

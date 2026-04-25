@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -28,7 +29,7 @@ func newImageCommand(deps Dependencies) *cobra.Command {
 				}
 				pull := deps.PullImage
 				if pull == nil {
-					puller := image.Puller{}
+					puller := image.Puller{GuestInit: defaultGuestAgentAssets}
 					pull = puller.PullAndCache
 				}
 				result, err := pull(cmd.Context(), cfg.ImageCacheDir, args[0])
@@ -77,6 +78,30 @@ func newImageCommand(deps Dependencies) *cobra.Command {
 		},
 	)
 	return cmd
+}
+
+func defaultGuestAgentAssets() (image.GuestAgentAssets, error) {
+	execPath, err := os.Executable()
+	if err != nil {
+		return image.GuestAgentAssets{}, err
+	}
+	candidates := []string{
+		filepath.Join(filepath.Dir(execPath), "..", "dist", "keel-agent"),
+		filepath.Join(filepath.Dir(execPath), "dist", "keel-agent"),
+	}
+	for _, candidate := range candidates {
+		data, err := os.ReadFile(candidate)
+		if err == nil {
+			return image.GuestAgentAssets{
+				Binary:     data,
+				InitScript: "#!/bin/sh\nexec /usr/local/bin/keel-agent\n",
+			}, nil
+		}
+		if !os.IsNotExist(err) {
+			return image.GuestAgentAssets{}, err
+		}
+	}
+	return image.GuestAgentAssets{}, fmt.Errorf("guest agent binary not found in dist/keel-agent")
 }
 
 func loadCLIConfig(ctx context.Context, deps Dependencies) (config.Config, error) {

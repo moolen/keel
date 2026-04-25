@@ -30,6 +30,12 @@ func TestPullAndCacheMaterializesArtifacts(t *testing.T) {
 		Fetch: func(context.Context, string) (v1.Image, error) {
 			return img, nil
 		},
+		GuestInit: func() (GuestAgentAssets, error) {
+			return GuestAgentAssets{
+				Binary:     []byte("agent-binary"),
+				InitScript: "#!/bin/sh\nexec /usr/local/bin/keel-agent\n",
+			}, nil
+		},
 	}
 
 	result, err := puller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:test")
@@ -42,6 +48,9 @@ func TestPullAndCacheMaterializesArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(result.Layout.RootfsPath); err != nil {
 		t.Fatalf("Stat(%q) error = %v", result.Layout.RootfsPath, err)
+	}
+	if got := debugfsRead(t, result.Layout.RootfsPath, "/usr/local/bin/keel-agent"); got != "agent-binary" {
+		t.Fatalf("guest agent content = %q", got)
 	}
 }
 

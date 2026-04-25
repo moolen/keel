@@ -72,7 +72,7 @@ func (m *Machine) BuildConfig() (firecracker.Config, error) {
 		SocketPath:      m.Assets.SocketPath,
 		LogPath:         m.Assets.LogPath,
 		KernelImagePath: m.Assets.KernelPath,
-		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off",
+		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/keel-agent",
 		Drives:          []models.Drive{rootDrive, workspaceDrive},
 		VsockDevices: []firecracker.VsockDevice{
 			{

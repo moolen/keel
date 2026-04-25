@@ -47,6 +47,9 @@ func TestBuildConfigUsesRuntimeAssets(t *testing.T) {
 	if got, want := *fcCfg.MachineCfg.MemSizeMib, int64(3072); got != want {
 		t.Fatalf("MemSizeMib = %d, want %d", got, want)
 	}
+	if got, want := fcCfg.KernelArgs, "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/keel-agent"; got != want {
+		t.Fatalf("KernelArgs = %q, want %q", got, want)
+	}
 	if len(fcCfg.Drives) != 2 {
 		t.Fatalf("len(Drives) = %d, want 2", len(fcCfg.Drives))
 	}
