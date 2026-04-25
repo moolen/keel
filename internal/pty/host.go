@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 	"github.com/moolen/keel/internal/vsock"
@@ -14,9 +16,12 @@ import (
 )
 
 type Client struct {
-	SocketPath string
-	Stdin      *os.File
-	Stdout     io.Writer
+	SocketPath   string
+	Stdin        *os.File
+	Stdout       io.Writer
+	Dial         func(context.Context, string, uint32) (net.Conn, error)
+	RetryTimeout time.Duration
+	RetryDelay   time.Duration
 }
 
 func (c Client) Run(ctx context.Context) error {
@@ -29,7 +34,7 @@ func (c Client) Run(ctx context.Context) error {
 		stdout = os.Stdout
 	}
 
-	conn, err := fcvsock.DialContext(ctx, c.SocketPath, vsock.PortPTY)
+	conn, err := c.dialPTY(ctx)
 	if err != nil {
 		return err
 	}
@@ -75,6 +80,40 @@ func (c Client) Run(ctx context.Context) error {
 				return nil
 			}
 			return fmt.Errorf("command exited with code %d", frame.Code)
+		}
+	}
+}
+
+func (c Client) dialPTY(ctx context.Context) (net.Conn, error) {
+	dial := c.Dial
+	if dial == nil {
+		dial = func(ctx context.Context, path string, port uint32) (net.Conn, error) {
+			return fcvsock.DialContext(ctx, path, port)
+		}
+	}
+	retryTimeout := c.RetryTimeout
+	if retryTimeout <= 0 {
+		retryTimeout = 5 * time.Second
+	}
+	retryDelay := c.RetryDelay
+	if retryDelay <= 0 {
+		retryDelay = 50 * time.Millisecond
+	}
+	deadline := time.Now().Add(retryTimeout)
+	var lastErr error
+	for {
+		conn, err := dial(ctx, c.SocketPath, vsock.PortPTY)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(retryDelay):
 		}
 	}
 }
