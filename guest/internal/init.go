@@ -13,6 +13,9 @@ func Bootstrap(command []string, env []string) error {
 	if err != nil {
 		return err
 	}
+	if err := ensureLoopbackUp(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := StartDNSForwarder(ctx); err != nil {

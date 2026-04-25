@@ -34,7 +34,9 @@ func StartDNSForwarder(ctx context.Context) error {
 		for {
 			n, addr, err := pc.ReadFrom(buf)
 			if err != nil {
-				log.Printf("dns forwarder read error: %v", err)
+				if ctx.Err() == nil {
+					log.Printf("dns forwarder read error: %v", err)
+				}
 				return
 			}
 			reply, err := forwardDNSQuery(ctx, buf[:n])
@@ -50,7 +52,6 @@ func StartDNSForwarder(ctx context.Context) error {
 }
 
 func forwardDNSQuery(ctx context.Context, payload []byte) ([]byte, error) {
-	_ = ctx
 	conn, err := vsock.Dial(hostCID, dnsPort, nil)
 	if err != nil {
 		return nil, err
