@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	"github.com/moolen/keel/internal/config"
+	keelpty "github.com/moolen/keel/internal/pty"
 	"github.com/sirupsen/logrus"
 )
 
@@ -29,6 +31,7 @@ type Machine struct {
 	Config         config.Config
 	Assets         RuntimeAssets
 	NewFirecracker func(context.Context, firecracker.Config) (firecrackerMachine, error)
+	AttachPTY      func(context.Context, string) error
 }
 
 type firecrackerMachine interface {
@@ -155,13 +158,22 @@ func (m *Machine) Run(ctx context.Context) error {
 
 	newFirecracker := m.NewFirecracker
 	if newFirecracker == nil {
-		newFirecracker = defaultFirecrackerMachine
+		newFirecracker = m.defaultFirecrackerMachine
 	}
 	instance, err := newFirecracker(ctx, fcCfg)
 	if err != nil {
 		return err
 	}
 	if err := instance.Start(ctx); err != nil {
+		return err
+	}
+	attachPTY := m.AttachPTY
+	if attachPTY == nil {
+		attachPTY = func(ctx context.Context, socketPath string) error {
+			return (keelpty.Client{SocketPath: socketPath}).Run(ctx)
+		}
+	}
+	if err := attachPTY(ctx, m.Assets.VSockPath); err != nil {
 		return err
 	}
 	return instance.Wait(ctx)
@@ -182,13 +194,19 @@ func prepareRuntimePaths(assets RuntimeAssets) error {
 	return nil
 }
 
-func defaultFirecrackerMachine(ctx context.Context, cfg firecracker.Config) (firecrackerMachine, error) {
+func (m *Machine) defaultFirecrackerMachine(ctx context.Context, cfg firecracker.Config) (firecrackerMachine, error) {
+	stdout := io.Discard
+	stderr := io.Discard
+	if m.Config.Verbose {
+		stdout = os.Stdout
+		stderr = os.Stderr
+	}
 	cmd := firecracker.VMCommandBuilder{}.
 		WithBin("firecracker").
 		WithSocketPath(cfg.SocketPath).
-		WithStdin(os.Stdin).
-		WithStdout(os.Stdout).
-		WithStderr(os.Stderr).
+		WithStdin(nil).
+		WithStdout(stdout).
+		WithStderr(stderr).
 		Build(ctx)
 	return firecracker.NewMachine(ctx, cfg,
 		firecracker.WithProcessRunner(cmd),

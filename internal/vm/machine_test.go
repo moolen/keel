@@ -77,6 +77,7 @@ func TestRunStartsAndWaitsForFirecracker(t *testing.T) {
 	var started bool
 	var waited bool
 	machine := NewMachine(cfg, assets)
+	machine.AttachPTY = func(context.Context, string) error { return nil }
 	machine.NewFirecracker = func(_ context.Context, cfg firecracker.Config) (firecrackerMachine, error) {
 		if got, want := cfg.SocketPath, assets.SocketPath; got != want {
 			t.Fatalf("SocketPath = %q, want %q", got, want)
@@ -111,6 +112,7 @@ func TestRunRemovesStaleRuntimeSockets(t *testing.T) {
 	}
 
 	machine := NewMachine(cfg, assets)
+	machine.AttachPTY = func(context.Context, string) error { return nil }
 	machine.NewFirecracker = func(_ context.Context, _ firecracker.Config) (firecrackerMachine, error) {
 		for _, path := range []string{assets.SocketPath, assets.VSockPath, assets.LogPath} {
 			if _, err := os.Stat(path); !os.IsNotExist(err) {

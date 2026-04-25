@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
+
+	guestinternal "github.com/moolen/keel/guest/internal"
 )
 
 type bootConfig struct {
@@ -95,7 +96,7 @@ func parseKernelCommandLine(cmdline string) (bootConfig, error) {
 }
 
 func mountCoreFilesystems() error {
-	for _, dir := range []string{"/proc", "/sys", "/dev", "/run"} {
+	for _, dir := range []string{"/proc", "/sys", "/dev", "/dev/pts", "/run"} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -110,13 +111,33 @@ func mountCoreFilesystems() error {
 		{"proc", "/proc", "proc", 0, ""},
 		{"sysfs", "/sys", "sysfs", 0, ""},
 		{"devtmpfs", "/dev", "devtmpfs", 0, "mode=0755"},
+		{"devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666,mode=0620"},
 	}
 	for _, mount := range mounts {
 		if err := syscall.Mount(mount.source, mount.target, mount.fstype, mount.flags, mount.data); err != nil && err != syscall.EBUSY {
 			return err
 		}
 	}
+	if err := ensurePTMXSymlink(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensurePTMXSymlink() error {
+	info, err := os.Lstat("/dev/ptmx")
+	switch {
+	case err == nil && info.Mode()&os.ModeSymlink != 0:
+		return nil
+	case err == nil:
+		if removeErr := os.Remove("/dev/ptmx"); removeErr != nil {
+			return removeErr
+		}
+	case os.IsNotExist(err):
+	default:
+		return err
+	}
+	return os.Symlink("pts/ptmx", "/dev/ptmx")
 }
 
 func mountWorkspace(target string) error {
@@ -176,12 +197,7 @@ func runInit(cfg bootConfig, ops initOps) error {
 }
 
 func runCommand(command []string, env []string) error {
-	cmd := exec.Command(command[0], command[1:]...)
-	cmd.Env = env
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return guestinternal.Bootstrap(command, env)
 }
 
 func powerOff() error {
