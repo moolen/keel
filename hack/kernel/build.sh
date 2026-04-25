@@ -67,7 +67,7 @@ if [[ -f "$CONFIG_FRAGMENT" ]]; then
   done < "$CONFIG_FRAGMENT"
 fi
 
-yes "" | make olddefconfig
+make olddefconfig < /dev/null
 make -j"$JOBS" vmlinux
 
 cp .config "$OUT_DIR/config"

@@ -9,3 +9,4 @@ cover.out
 *.ext4
 *.sock
 *.log
+hack/kernel/out/
