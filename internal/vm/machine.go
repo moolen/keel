@@ -2,16 +2,18 @@ package vm
 
 import (
 	"context"
-	"errors"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	"github.com/moolen/keel/internal/config"
+	"github.com/sirupsen/logrus"
 )
-
-var ErrNotImplemented = errors.New("vm lifecycle not implemented yet")
 
 type RuntimeAssets struct {
 	KernelPath    string
@@ -24,8 +26,14 @@ type RuntimeAssets struct {
 }
 
 type Machine struct {
-	Config config.Config
-	Assets RuntimeAssets
+	Config         config.Config
+	Assets         RuntimeAssets
+	NewFirecracker func(context.Context, firecracker.Config) (firecrackerMachine, error)
+}
+
+type firecrackerMachine interface {
+	Start(context.Context) error
+	Wait(context.Context) error
 }
 
 func NewMachine(cfg config.Config, assets RuntimeAssets) *Machine {
@@ -72,7 +80,7 @@ func (m *Machine) BuildConfig() (firecracker.Config, error) {
 		SocketPath:      m.Assets.SocketPath,
 		LogPath:         m.Assets.LogPath,
 		KernelImagePath: m.Assets.KernelPath,
-		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/keel-agent",
+		KernelArgs:      m.kernelArgs(),
 		Drives:          []models.Drive{rootDrive, workspaceDrive},
 		VsockDevices: []firecracker.VsockDevice{
 			{
@@ -89,16 +97,48 @@ func (m *Machine) BuildConfig() (firecracker.Config, error) {
 	}, nil
 }
 
-func (m *Machine) Run(context.Context) error {
+func (m *Machine) kernelArgs() string {
+	args := []string{
+		"console=ttyS0",
+		"reboot=k",
+		"panic=1",
+		"pci=off",
+		"root=/dev/vda",
+		"rw",
+		"init=/usr/local/bin/keel-agent",
+	}
+	if len(m.Config.Command) > 0 {
+		encoded, err := encodeKernelCommand(m.Config.Command)
+		if err == nil && encoded != "" {
+			args = append(args, "keel.cmd="+encoded)
+		}
+	}
+	target := m.Config.Workspace.Target
+	if target == "" {
+		target = "/workspace"
+	}
+	args = append(args, "keel.cwd="+target)
+	return strings.Join(args, " ")
+}
+
+func encodeKernelCommand(command []string) (string, error) {
+	data, err := json.Marshal(command)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func (m *Machine) Run(ctx context.Context) error {
 	if err := m.Validate(); err != nil {
+		return err
+	}
+	if err := ensureKVMAccess(); err != nil {
 		return err
 	}
 	fcCfg, err := m.BuildConfig()
 	if err != nil {
 		return err
-	}
-	if _, err := os.Stat("/dev/kvm"); err != nil {
-		return fmt.Errorf("kvm unavailable: %w", err)
 	}
 	if _, err := os.Stat(fcCfg.KernelImagePath); err != nil {
 		return fmt.Errorf("kernel image unavailable: %w", err)
@@ -109,5 +149,49 @@ func (m *Machine) Run(context.Context) error {
 	if _, err := os.Stat(m.Assets.WorkspacePath); err != nil {
 		return fmt.Errorf("workspace unavailable: %w", err)
 	}
-	return ErrNotImplemented
+	if err := prepareRuntimePaths(m.Assets); err != nil {
+		return err
+	}
+
+	newFirecracker := m.NewFirecracker
+	if newFirecracker == nil {
+		newFirecracker = defaultFirecrackerMachine
+	}
+	instance, err := newFirecracker(ctx, fcCfg)
+	if err != nil {
+		return err
+	}
+	if err := instance.Start(ctx); err != nil {
+		return err
+	}
+	return instance.Wait(ctx)
+}
+
+func prepareRuntimePaths(assets RuntimeAssets) error {
+	for _, path := range []string{assets.SocketPath, assets.VSockPath, assets.LogPath} {
+		if path == "" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func defaultFirecrackerMachine(ctx context.Context, cfg firecracker.Config) (firecrackerMachine, error) {
+	cmd := firecracker.VMCommandBuilder{}.
+		WithBin("firecracker").
+		WithSocketPath(cfg.SocketPath).
+		WithStdin(os.Stdin).
+		WithStdout(os.Stdout).
+		WithStderr(os.Stderr).
+		Build(ctx)
+	return firecracker.NewMachine(ctx, cfg,
+		firecracker.WithProcessRunner(cmd),
+		firecracker.WithLogger(logrus.NewEntry(logrus.New())),
+	)
 }
