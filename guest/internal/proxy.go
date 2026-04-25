@@ -2,8 +2,8 @@ package internal
 
 import (
 	"bufio"
-	"encoding/binary"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -28,12 +28,15 @@ const (
 func StartTCPProxy(ctx context.Context) error {
 	if err := ensureTransparentTCPRedirect(); err != nil {
 		log.Printf("transparent tcp redirect unavailable: %v", err)
+	} else {
+		log.Printf("transparent tcp redirect enabled on %s", tcpProxyAddr)
 	}
 
 	listener, err := net.Listen("tcp", tcpProxyAddr)
 	if err != nil {
 		return err
 	}
+	log.Printf("tcp proxy listening on %s", tcpProxyAddr)
 
 	go func() {
 		<-ctx.Done()
@@ -51,6 +54,7 @@ func StartTCPProxy(ctx context.Context) error {
 			}
 			go func() {
 				defer conn.Close()
+				log.Printf("tcp proxy accepted %s", conn.RemoteAddr())
 				if err := handleProxyConn(ctx, conn); err != nil && ctx.Err() == nil {
 					log.Printf("tcp proxy connection error: %v", err)
 				}
@@ -63,12 +67,15 @@ func StartTCPProxy(ctx context.Context) error {
 
 func handleProxyConn(ctx context.Context, client net.Conn) error {
 	if destination, err := originalDestination(client); err == nil && shouldUseOriginalDestination(destination) {
+		log.Printf("tcp proxy using transparent destination %s", destination)
 		upstream, err := connectTCPProxy(destination)
 		if err != nil {
 			return err
 		}
 		defer upstream.Close()
 		return bridgeGuestProxy(client, upstream)
+	} else if err != nil {
+		log.Printf("tcp proxy original destination unavailable: %v", err)
 	}
 
 	reader := bufio.NewReader(client)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,7 @@ type RuntimeAssets struct {
 	VSockPath     string
 	LogPath       string
 	CID           uint32
+	Network       *GuestNetwork
 }
 
 type Machine struct {
@@ -32,6 +34,7 @@ type Machine struct {
 	Assets         RuntimeAssets
 	NewFirecracker func(context.Context, firecracker.Config) (firecrackerMachine, error)
 	AttachPTY      func(context.Context, string) error
+	PrepareNetwork func(context.Context) (*GuestNetwork, func(), error)
 }
 
 type firecrackerMachine interface {
@@ -97,6 +100,7 @@ func (m *Machine) BuildConfig() (firecracker.Config, error) {
 			MemSizeMib: firecracker.Int64(int64(m.Config.Resources.MemoryMB)),
 			Smt:        firecracker.Bool(false),
 		},
+		NetworkInterfaces: m.networkInterfaces(),
 	}, nil
 }
 
@@ -139,6 +143,24 @@ func (m *Machine) Run(ctx context.Context) error {
 	if err := ensureKVMAccess(); err != nil {
 		return err
 	}
+	cleanupNetwork := func() {}
+	if m.Assets.Network == nil && m.Config.Network.Mode != "none" {
+		prepareNetwork := m.PrepareNetwork
+		if prepareNetwork == nil {
+			prepareNetwork = func(ctx context.Context) (*GuestNetwork, func(), error) {
+				return TapManager{}.Prepare(ctx)
+			}
+		}
+		network, cleanup, err := prepareNetwork(ctx)
+		if err != nil {
+			return err
+		}
+		m.Assets.Network = network
+		if cleanup != nil {
+			cleanupNetwork = cleanup
+		}
+	}
+	defer cleanupNetwork()
 	fcCfg, err := m.BuildConfig()
 	if err != nil {
 		return err
@@ -212,4 +234,20 @@ func (m *Machine) defaultFirecrackerMachine(ctx context.Context, cfg firecracker
 		firecracker.WithProcessRunner(cmd),
 		firecracker.WithLogger(logrus.NewEntry(logrus.New())),
 	)
+}
+
+func (m *Machine) networkInterfaces() []firecracker.NetworkInterface {
+	if m.Assets.Network == nil {
+		return nil
+	}
+	return []firecracker.NetworkInterface{{
+		StaticConfiguration: &firecracker.StaticNetworkConfiguration{
+			HostDevName: m.Assets.Network.TapName,
+			MacAddress:  m.Assets.Network.MACAddress,
+			IPConfiguration: &firecracker.IPConfiguration{
+				IPAddr:  net.IPNet{IP: append(net.IP(nil), m.Assets.Network.GuestIP.IP...), Mask: append(net.IPMask(nil), m.Assets.Network.GuestIP.Mask...)},
+				Gateway: append(net.IP(nil), m.Assets.Network.Gateway...),
+			},
+		},
+	}}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,56 @@ func TestBuildConfigUsesRuntimeAssets(t *testing.T) {
 	}
 }
 
+func TestBuildConfigIncludesGuestNetworkInterface(t *testing.T) {
+	cfg := config.Default()
+
+	machine := NewMachine(cfg, RuntimeAssets{
+		KernelPath:    "/tmp/vmlinux",
+		RootfsPath:    "/tmp/rootfs.ext4",
+		WorkspacePath: "/tmp/workspace.ext4",
+		SocketPath:    "/tmp/firecracker.sock",
+		VSockPath:     "/tmp/firecracker.vsock",
+		LogPath:       "/tmp/firecracker.log",
+		CID:           52,
+		Network: &GuestNetwork{
+			TapName:    "keeltap0",
+			MACAddress: "02:fc:00:00:00:01",
+			GuestIP: net.IPNet{
+				IP:   net.ParseIP("172.22.0.2"),
+				Mask: net.CIDRMask(30, 32),
+			},
+			Gateway: net.ParseIP("172.22.0.1"),
+		},
+	})
+
+	fcCfg, err := machine.BuildConfig()
+	if err != nil {
+		t.Fatalf("BuildConfig() error = %v", err)
+	}
+	if len(fcCfg.NetworkInterfaces) != 1 {
+		t.Fatalf("len(NetworkInterfaces) = %d, want 1", len(fcCfg.NetworkInterfaces))
+	}
+	staticCfg := fcCfg.NetworkInterfaces[0].StaticConfiguration
+	if staticCfg == nil {
+		t.Fatal("StaticConfiguration = nil, want non-nil")
+	}
+	if got, want := staticCfg.HostDevName, "keeltap0"; got != want {
+		t.Fatalf("HostDevName = %q, want %q", got, want)
+	}
+	if got, want := staticCfg.MacAddress, "02:fc:00:00:00:01"; got != want {
+		t.Fatalf("MacAddress = %q, want %q", got, want)
+	}
+	if staticCfg.IPConfiguration == nil {
+		t.Fatal("IPConfiguration = nil, want non-nil")
+	}
+	if got, want := staticCfg.IPConfiguration.IPAddr.String(), "172.22.0.2/30"; got != want {
+		t.Fatalf("IPAddr = %q, want %q", got, want)
+	}
+	if got, want := staticCfg.IPConfiguration.Gateway.String(), "172.22.0.1"; got != want {
+		t.Fatalf("Gateway = %q, want %q", got, want)
+	}
+}
+
 func TestRunStartsAndWaitsForFirecracker(t *testing.T) {
 	assets := createRuntimeAssets(t)
 	cfg := config.Default()
@@ -77,6 +128,9 @@ func TestRunStartsAndWaitsForFirecracker(t *testing.T) {
 	var started bool
 	var waited bool
 	machine := NewMachine(cfg, assets)
+	machine.PrepareNetwork = func(context.Context) (*GuestNetwork, func(), error) {
+		return nil, func() {}, nil
+	}
 	machine.AttachPTY = func(context.Context, string) error { return nil }
 	machine.NewFirecracker = func(_ context.Context, cfg firecracker.Config) (firecrackerMachine, error) {
 		if got, want := cfg.SocketPath, assets.SocketPath; got != want {
@@ -112,6 +166,9 @@ func TestRunRemovesStaleRuntimeSockets(t *testing.T) {
 	}
 
 	machine := NewMachine(cfg, assets)
+	machine.PrepareNetwork = func(context.Context) (*GuestNetwork, func(), error) {
+		return nil, func() {}, nil
+	}
 	machine.AttachPTY = func(context.Context, string) error { return nil }
 	machine.NewFirecracker = func(_ context.Context, _ firecracker.Config) (firecrackerMachine, error) {
 		for _, path := range []string{assets.SocketPath, assets.VSockPath, assets.LogPath} {
