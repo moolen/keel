@@ -93,13 +93,29 @@ func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets
 		Policy:  engine,
 		Tracker: tracker,
 	}
+	tcpProxy := network.TCPProxy{
+		Policy: engine,
+	}
 	go func() {
 		errCh <- dnsProxy.Serve(serviceCtx, assets.VSockPath)
 	}()
-	socketPath := assets.VSockPath + "_3053"
+	go func() {
+		errCh <- tcpProxy.Serve(serviceCtx, assets.VSockPath)
+	}()
+	socketPaths := []string{
+		assets.VSockPath + "_3053",
+		assets.VSockPath + "_3128",
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if _, err := os.Stat(socketPath); err == nil {
+		ready := true
+		for _, socketPath := range socketPaths {
+			if _, err := os.Stat(socketPath); err != nil {
+				ready = false
+				break
+			}
+		}
+		if ready {
 			return cancel, nil
 		}
 		select {

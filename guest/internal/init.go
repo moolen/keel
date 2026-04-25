@@ -21,5 +21,8 @@ func Bootstrap(command []string, env []string) error {
 	if err := StartDNSForwarder(ctx); err != nil {
 		return err
 	}
-	return ServePTY(command, cwd, env)
+	if err := StartTCPProxy(ctx); err != nil {
+		return err
+	}
+	return ServePTY(command, cwd, proxyEnvironment(env))
 }

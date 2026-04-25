@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/moolen/keel/internal/config"
 	"github.com/moolen/keel/internal/image"
@@ -148,6 +149,35 @@ func TestHostRunnerAutoPullsMissingRootfs(t *testing.T) {
 	}
 	if machineAssets.RootfsPath != rootfsPath {
 		t.Fatalf("machineAssets.RootfsPath = %q, want %q", machineAssets.RootfsPath, rootfsPath)
+	}
+}
+
+func TestHostRunnerStartServicesStartsDNSAndTCPProxies(t *testing.T) {
+	runner := HostRunner{}
+	assets := vm.RuntimeAssets{
+		VSockPath: filepath.Join(t.TempDir(), "firecracker.vsock"),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stop, err := runner.startServices(ctx, config.Default(), assets)
+	if err != nil {
+		t.Fatalf("startServices() error = %v", err)
+	}
+	defer stop()
+
+	for _, socketPath := range []string{assets.VSockPath + "_3053", assets.VSockPath + "_3128"} {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			if _, statErr := os.Stat(socketPath); statErr == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("socket %q was not created in time", socketPath)
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
 	}
 }
 
