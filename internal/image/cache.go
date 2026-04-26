@@ -13,6 +13,7 @@ type CacheLayout struct {
 	Directory  string
 	RootfsPath string
 	OCIPath    string
+	AgentPath  string
 }
 
 func CachePath(cacheDir, ref string) string {
@@ -37,6 +38,7 @@ func ResolveCacheLayout(cacheDir, ref string) (CacheLayout, error) {
 		Directory:  dir,
 		RootfsPath: filepath.Join(dir, "rootfs.ext4"),
 		OCIPath:    filepath.Join(dir, "image.tar"),
+		AgentPath:  filepath.Join(dir, "guest-agent.sha256"),
 	}, nil
 }
 

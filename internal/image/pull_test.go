@@ -49,6 +49,9 @@ func TestPullAndCacheMaterializesArtifacts(t *testing.T) {
 	if _, err := os.Stat(result.Layout.RootfsPath); err != nil {
 		t.Fatalf("Stat(%q) error = %v", result.Layout.RootfsPath, err)
 	}
+	if _, err := os.Stat(result.Layout.AgentPath); err != nil {
+		t.Fatalf("Stat(%q) error = %v", result.Layout.AgentPath, err)
+	}
 	if got := debugfsRead(t, result.Layout.RootfsPath, "/usr/local/bin/keel-agent"); got != "agent-binary" {
 		t.Fatalf("guest agent content = %q", got)
 	}

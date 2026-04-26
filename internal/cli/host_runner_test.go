@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -149,6 +150,73 @@ func TestHostRunnerAutoPullsMissingRootfs(t *testing.T) {
 	}
 	if machineAssets.RootfsPath != rootfsPath {
 		t.Fatalf("machineAssets.RootfsPath = %q, want %q", machineAssets.RootfsPath, rootfsPath)
+	}
+}
+
+func TestHostRunnerRefreshesCachedGuestAgentWhenDigestChanges(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for guest agent refresh tests")
+	}
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		t.Skip("debugfs is required for guest agent refresh tests")
+	}
+
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+
+	layout, err := image.ResolveCacheLayout(tempDir, cfg.Image)
+	if err != nil {
+		t.Fatalf("ResolveCacheLayout() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(layout.RootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if _, err := image.CreateRootfsImage(image.CreateRootfsOptions{
+		SourceDir: t.TempDir(),
+		ImagePath: layout.RootfsPath,
+		SizeMB:    128,
+	}); err != nil {
+		t.Fatalf("CreateRootfsImage() error = %v", err)
+	}
+	if err := os.WriteFile(layout.AgentPath, []byte("stale\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(agent digest) error = %v", err)
+	}
+
+	guestAssets := image.GuestAgentAssets{Binary: []byte("agent-new")}
+	var machineAssets vm.RuntimeAssets
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		GuestAssets: func() (image.GuestAgentAssets, error) {
+			return guestAssets, nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		MachineFactory: func(_ config.Config, assets vm.RuntimeAssets) machineRunner {
+			machineAssets = assets
+			return stubMachineRunner{}
+		},
+		PrepareFeatures: func(string, []config.FeatureConfig) error { return nil },
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if machineAssets.RootfsPath != layout.RootfsPath {
+		t.Fatalf("machineAssets.RootfsPath = %q, want %q", machineAssets.RootfsPath, layout.RootfsPath)
+	}
+	data, err := os.ReadFile(layout.AgentPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if got, want := strings.TrimSpace(string(data)), guestAssets.Digest(); got != want {
+		t.Fatalf("agent digest = %q, want %q", got, want)
 	}
 }
 

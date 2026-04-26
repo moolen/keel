@@ -1,6 +1,7 @@
 package image
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,11 @@ import (
 type GuestAgentAssets struct {
 	Binary     []byte
 	InitScript string
+}
+
+func (a GuestAgentAssets) Digest() string {
+	sum := sha256.Sum256(a.Binary)
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func InjectGuestAgent(rootfsPath string, assets GuestAgentAssets) error {
@@ -51,6 +57,30 @@ func InjectGuestAgent(rootfsPath string, assets GuestAgentAssets) error {
 		return err
 	}
 	return nil
+}
+
+func EnsureGuestAgent(rootfsPath, digestPath string, assets GuestAgentAssets) (bool, error) {
+	if rootfsPath == "" {
+		return false, fmt.Errorf("rootfs path is required")
+	}
+	if digestPath == "" {
+		return false, fmt.Errorf("guest agent digest path is required")
+	}
+	currentDigest := assets.Digest()
+	data, err := os.ReadFile(digestPath)
+	if err == nil && strings.TrimSpace(string(data)) == currentDigest {
+		return false, nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := InjectGuestAgent(rootfsPath, assets); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(digestPath, []byte(currentDigest+"\n"), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func debugfsWrite(rootfsPath, command string) error {

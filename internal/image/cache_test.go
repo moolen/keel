@@ -23,6 +23,9 @@ func TestCacheLayoutFromReference(t *testing.T) {
 	if got, want := layout.RootfsPath, filepath.Join("/var/cache/keel/images", "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4"); got != want {
 		t.Fatalf("layout.RootfsPath = %q, want %q", got, want)
 	}
+	if got, want := layout.AgentPath, filepath.Join("/var/cache/keel/images", "index.docker.io", "library", "ubuntu", "24.04", "guest-agent.sha256"); got != want {
+		t.Fatalf("layout.AgentPath = %q, want %q", got, want)
+	}
 }
 
 func TestCacheLayoutDigestReference(t *testing.T) {

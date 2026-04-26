@@ -23,6 +23,7 @@ type machineRunner interface {
 type HostRunner struct {
 	RuntimeDir        string
 	EnsureKernel      func(context.Context, string) (string, error)
+	GuestAssets       func() (image.GuestAgentAssets, error)
 	WorkspacePreparer func(workspace.PrepareOptions) (workspace.PrepareResult, error)
 	SyncWorkspace     func(workspace.ImageSyncOptions) (workspace.SyncResult, error)
 	PullImage         func(context.Context, string, string) (image.PullResult, error)
@@ -185,6 +186,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	if err != nil {
 		return vm.RuntimeAssets{}, err
 	}
+	var guestAssets image.GuestAgentAssets
 	if _, err := os.Stat(layout.RootfsPath); os.IsNotExist(err) {
 		pull := r.PullImage
 		if pull == nil {
@@ -198,6 +200,19 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 		layout = result.Layout
 	} else if err != nil {
 		return vm.RuntimeAssets{}, err
+	}
+	loadGuestAssets := r.GuestAssets
+	if loadGuestAssets == nil {
+		loadGuestAssets = defaultGuestAgentAssets
+	}
+	guestAssets, err = loadGuestAssets()
+	if err != nil {
+		guestAssets = image.GuestAgentAssets{}
+	}
+	if len(guestAssets.Binary) > 0 {
+		if _, err := image.EnsureGuestAgent(layout.RootfsPath, layout.AgentPath, guestAssets); err != nil {
+			return vm.RuntimeAssets{}, err
+		}
 	}
 	if err := r.prepareFeatures(layout.RootfsPath, cfg.Features); err != nil {
 		return vm.RuntimeAssets{}, err

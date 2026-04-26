@@ -79,7 +79,7 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 		if err != nil {
 			return PullResult{}, err
 		}
-		if err := InjectGuestAgent(layout.RootfsPath, assets); err != nil {
+		if _, err := EnsureGuestAgent(layout.RootfsPath, layout.AgentPath, assets); err != nil {
 			return PullResult{}, err
 		}
 	}
