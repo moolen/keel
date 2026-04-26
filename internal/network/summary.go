@@ -104,8 +104,8 @@ func (s *Summary) WriteReport(w io.Writer) error {
 		if left.Path != right.Path {
 			return left.Path < right.Path
 		}
-		if left.Allowed != right.Allowed {
-			return left.Allowed && !right.Allowed
+		if left.Policy != right.Policy {
+			return left.Policy < right.Policy
 		}
 		return false
 	})
@@ -123,11 +123,7 @@ func (s *Summary) WriteReport(w io.Writer) error {
 		}
 	}
 	for _, row := range httpRows {
-		policy := "denied"
-		if row.Allowed {
-			policy = "allowed"
-		}
-		if _, err := fmt.Fprintf(w, "http %s %s %s policy=%s count=%d\n", row.Host, row.Method, row.Path, policy, row.Count); err != nil {
+		if _, err := fmt.Fprintf(w, "http %s %s %s policy=%s count=%d\n", row.Host, row.Method, row.Path, row.Policy, row.Count); err != nil {
 			return err
 		}
 	}
@@ -148,6 +144,9 @@ type summaryRow struct {
 }
 
 func decisionLabel(decision Decision) string {
+	if decision.WouldDeny {
+		return "would_deny"
+	}
 	if decision.Allowed {
 		return "allowed"
 	}

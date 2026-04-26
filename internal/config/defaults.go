@@ -30,7 +30,8 @@ func Default() Config {
 			SyncConfirm: true,
 		},
 		Network: NetworkConfig{
-			Mode: "vsock",
+			Mode:  "vsock",
+			Audit: false,
 			TCP: TCPConfig{
 				AllowedCIDRs: []string{},
 				DeniedCIDRs:  []string{},

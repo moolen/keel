@@ -23,6 +23,7 @@ type HTTPRule struct {
 type HTTPPolicyConfig struct {
 	Default string
 	Rules   []HTTPRule
+	Audit   bool
 }
 
 type HTTPPolicy struct {
@@ -45,18 +46,27 @@ func (p *HTTPPolicy) Evaluate(req HTTPRequest) Decision {
 		if !matchHTTPRule(rule, req) {
 			continue
 		}
-		return Decision{
+		return applyHTTPAudit(p.cfg, Decision{
 			Allowed: strings.EqualFold(strings.TrimSpace(rule.Action), "allow"),
 			Reason:  "http rule matched",
 			Rule:    fmt.Sprintf("%s %s %s", rule.Host, strings.Join(rule.Methods, ","), strings.Join(rule.Paths, ",")),
-		}
+		})
 	}
 
-	return Decision{
+	return applyHTTPAudit(p.cfg, Decision{
 		Allowed: strings.EqualFold(strings.TrimSpace(p.cfg.Default), "allow"),
 		Reason:  "http default",
 		Rule:    "default",
+	})
+}
+
+func applyHTTPAudit(cfg HTTPPolicyConfig, decision Decision) Decision {
+	if !cfg.Audit || decision.Allowed {
+		return decision
 	}
+	decision.Allowed = true
+	decision.WouldDeny = true
+	return decision
 }
 
 func matchHTTPRule(rule HTTPRule, req HTTPRequest) bool {

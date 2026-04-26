@@ -67,6 +67,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	defer r.cleanupRuntimeAssets(assets)
 	req.Config = cfg
 	r.warnKernelNetworkLimitations(req, assets)
+	r.warnNetworkAuditMode(req)
 	factory := r.MachineFactory
 	if factory != nil {
 		startServices := r.ServiceStarter
@@ -143,6 +144,17 @@ func (r HostRunner) warnKernelNetworkLimitations(req RunRequest, assets vm.Runti
 		stderr = os.Stderr
 	}
 	_, _ = fmt.Fprintln(stderr, "warning: transparent tcp redirect is unavailable on the default kernel; direct tap egress remains blocked, so only proxy-aware clients will work until you provide a custom kernel with netfilter support")
+}
+
+func (r HostRunner) warnNetworkAuditMode(req RunRequest) {
+	if !req.Config.Network.Audit {
+		return
+	}
+	stderr := req.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	_, _ = fmt.Fprintln(stderr, "warning: network audit mode enabled; proxy policy denies will be allowed at runtime and reported as would_deny")
 }
 
 func networkPolicyConfigured(cfg config.Config) bool {
@@ -409,8 +421,10 @@ func buildNetworkServices(cfg config.Config) (network.DNSProxy, network.TCPProxy
 	httpPolicy := network.HTTPPolicyConfig{
 		Default: cfg.Network.HTTP.Default,
 		Rules:   httpRulesFromConfig(cfg.Network.HTTP.Rules),
+		Audit:   cfg.Network.Audit,
 	}
 	engine := network.NewPolicyEngine(network.PolicyConfig{
+		Audit: cfg.Network.Audit,
 		DNS: network.RuleSet{
 			Allowed: cfg.Network.DNS.Allowed,
 			Denied:  cfg.Network.DNS.Denied,

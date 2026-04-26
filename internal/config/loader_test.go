@@ -317,6 +317,57 @@ func TestLoadMITMAndHTTPDefaults(t *testing.T) {
 	if got, want := cfg.Network.HTTP.Default, "deny"; got != want {
 		t.Fatalf("HTTP default = %q, want %q", got, want)
 	}
+	if cfg.Network.Audit {
+		t.Fatal("network audit default should be false")
+	}
+}
+
+func TestLoadParsesNetworkAudit(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpHome, ".config", "keel", "config.yaml"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte("network:\n  audit: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Network.Audit {
+		t.Fatal("network audit should be true when configured")
+	}
+}
+
+func TestLoadProjectCanDisableInheritedNetworkAudit(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpHome, ".config", "keel", "config.yaml"), []byte("network:\n  audit: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte("network:\n  audit: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Network.Audit {
+		t.Fatal("project config should be able to disable inherited network audit")
+	}
 }
 
 func TestApplyOverrides(t *testing.T) {

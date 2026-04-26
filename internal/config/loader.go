@@ -25,8 +25,9 @@ type mergePresenceConfig struct {
 }
 
 type mergePresenceNetworkConfig struct {
-	MITM *mergePresenceMITMConfig `yaml:"mitm"`
-	HTTP *mergePresenceHTTPConfig `yaml:"http"`
+	Audit *bool                    `yaml:"audit"`
+	MITM  *mergePresenceMITMConfig `yaml:"mitm"`
+	HTTP  *mergePresenceHTTPConfig `yaml:"http"`
 }
 
 type mergePresenceMITMConfig struct {
@@ -177,6 +178,9 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	}
 	if src.Network.Mode != "" {
 		dst.Network.Mode = src.Network.Mode
+	}
+	if presence.Network.Audit != nil {
+		dst.Network.Audit = src.Network.Audit
 	}
 	dst.Network.DenyIfNoSNI = dst.Network.DenyIfNoSNI || src.Network.DenyIfNoSNI
 	if len(src.Network.DNS.Allowed) > 0 {

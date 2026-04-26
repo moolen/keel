@@ -3,10 +3,10 @@ package network
 import "strings"
 
 type HTTPSummaryKey struct {
-	Host    string
-	Method  string
-	Path    string
-	Allowed bool
+	Host   string
+	Method string
+	Path   string
+	Policy string
 }
 
 type httpSummaryRow struct {
@@ -20,10 +20,10 @@ func (s *Summary) RecordHTTP(host, method, path string, decision Decision) {
 	}
 
 	key := HTTPSummaryKey{
-		Host:    normalizeHTTPHost(host),
-		Method:  strings.ToUpper(strings.TrimSpace(method)),
-		Path:    normalizeHTTPPath(path),
-		Allowed: decision.Allowed,
+		Host:   normalizeHTTPHost(host),
+		Method: strings.ToUpper(strings.TrimSpace(method)),
+		Path:   normalizeHTTPPath(path),
+		Policy: decisionLabel(decision),
 	}
 	if key.Host == "" {
 		key.Host = "unknown"

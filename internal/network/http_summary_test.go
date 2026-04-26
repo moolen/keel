@@ -33,10 +33,10 @@ func TestSummaryRecordHTTPNormalizesHostPort(t *testing.T) {
 	}
 
 	key := HTTPSummaryKey{
-		Host:    "api.github.com",
-		Method:  "GET",
-		Path:    "/repos/123",
-		Allowed: true,
+		Host:   "api.github.com",
+		Method: "GET",
+		Path:   "/repos/123",
+		Policy: "allowed",
 	}
 	if got := summary.http[key]; got != 2 {
 		t.Fatalf("summary.http[%+v] = %d, want 2", key, got)
@@ -54,10 +54,10 @@ func TestSummaryRecordHTTPNormalizesBracketedIPv6Host(t *testing.T) {
 	}
 
 	key := HTTPSummaryKey{
-		Host:    "2001:db8::1",
-		Method:  "GET",
-		Path:    "/",
-		Allowed: false,
+		Host:   "2001:db8::1",
+		Method: "GET",
+		Path:   "/",
+		Policy: "denied",
 	}
 	if got := summary.http[key]; got != 2 {
 		t.Fatalf("summary.http[%+v] = %d, want 2", key, got)

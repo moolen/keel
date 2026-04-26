@@ -36,6 +36,7 @@ type WorkspaceConfig struct {
 
 type NetworkConfig struct {
 	Mode         string     `yaml:"mode"`
+	Audit        bool       `yaml:"audit"`
 	DenyIfNoSNI  bool       `yaml:"deny_if_no_sni"`
 	DNS          DNSConfig  `yaml:"dns"`
 	TCP          TCPConfig  `yaml:"tcp"`
