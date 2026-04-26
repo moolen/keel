@@ -15,6 +15,7 @@ import (
 type TCPProxy struct {
 	Policy      *PolicyEngine
 	DialContext func(context.Context, string, string) (net.Conn, error)
+	Summary     *Summary
 	Now         func() time.Time
 }
 
@@ -79,6 +80,7 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 		now = p.Now()
 	}
 	decision := p.Policy.EvaluateTCP(ip, port, sni, now)
+	p.Summary.RecordTCP(summaryHost(p.Policy, ip, sni, now), port, decision)
 	if !decision.Allowed {
 		log.Printf("tcp denied destination=%s sni=%s rule=%s reason=%s", destination, sni, decision.Rule, decision.Reason)
 		return nil
@@ -102,6 +104,21 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	}
 
 	return bridgeTCP(conn, upstream)
+}
+
+func summaryHost(policy *PolicyEngine, ip net.IP, sni string, now time.Time) string {
+	if name := normalizeName(sni); name != "" {
+		return name
+	}
+	if policy != nil && policy.tracker != nil {
+		if domains := policy.tracker.Domains(ip, now); len(domains) > 0 {
+			return domains[0]
+		}
+	}
+	if ip != nil {
+		return ip.String()
+	}
+	return "unknown"
 }
 
 func parseDestination(destination string) (net.IP, int, error) {

@@ -22,6 +22,7 @@ type DNSProxy struct {
 	Policy   *PolicyEngine
 	Tracker  *Tracker
 	Resolver DNSResolver
+	Summary  *Summary
 	Now      func() time.Time
 }
 
@@ -30,7 +31,9 @@ func (p DNSProxy) HandleQuery(ctx context.Context, query *dns.Msg) (*dns.Msg, er
 		return nil, fmt.Errorf("dns query has no question")
 	}
 
+	domain := normalizeName(query.Question[0].Name)
 	decision := p.Policy.EvaluateDNS(query.Question[0].Name)
+	p.Summary.RecordDNS(domain, decision)
 	if !decision.Allowed {
 		log.Printf("dns denied domain=%s rule=%s reason=%s", query.Question[0].Name, decision.Rule, decision.Reason)
 		reply := new(dns.Msg)

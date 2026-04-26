@@ -13,6 +13,7 @@ import (
 
 func TestTCPProxyAllowsCorrelatedDestination(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
+	summary := NewSummary()
 	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
 
 	engine := NewPolicyEngine(PolicyConfig{}, tracker)
@@ -28,7 +29,8 @@ func TestTCPProxyAllowsCorrelatedDestination(t *testing.T) {
 	var dialAddress string
 
 	proxy := TCPProxy{
-		Policy: engine,
+		Policy:  engine,
+		Summary: summary,
 		Now: func() time.Time {
 			return time.Unix(110, 0)
 		},
@@ -95,17 +97,20 @@ func TestTCPProxyAllowsCorrelatedDestination(t *testing.T) {
 	if dialAddress != "203.0.113.10:80" {
 		t.Fatalf("dial address = %q, want 203.0.113.10:80", dialAddress)
 	}
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:80 policy=allowed count=1")
 }
 
 func TestTCPProxyDeniesUncorrelatedDestination(t *testing.T) {
 	engine := NewPolicyEngine(PolicyConfig{}, NewTracker(60*time.Second))
+	summary := NewSummary()
 
 	clientSide, proxySide := net.Pipe()
 	defer clientSide.Close()
 
 	var dialed bool
 	proxy := TCPProxy{
-		Policy: engine,
+		Policy:  engine,
+		Summary: summary,
 		Now: func() time.Time {
 			return time.Unix(110, 0)
 		},
@@ -136,10 +141,12 @@ func TestTCPProxyDeniesUncorrelatedDestination(t *testing.T) {
 	if dialed {
 		t.Fatal("dialer was called for denied destination")
 	}
+	assertSummaryReportContains(t, summary, "tcp  198.51.100.25:80 policy=denied count=1")
 }
 
 func TestTCPProxyDeniesMismatchedTLSSNI(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
+	summary := NewSummary()
 	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
 
 	engine := NewPolicyEngine(PolicyConfig{
@@ -154,7 +161,8 @@ func TestTCPProxyDeniesMismatchedTLSSNI(t *testing.T) {
 
 	var dialed bool
 	proxy := TCPProxy{
-		Policy: engine,
+		Policy:  engine,
+		Summary: summary,
 		Now: func() time.Time {
 			return time.Unix(110, 0)
 		},
@@ -188,6 +196,7 @@ func TestTCPProxyDeniesMismatchedTLSSNI(t *testing.T) {
 	if dialed {
 		t.Fatal("dialer was called for mismatched TLS SNI")
 	}
+	assertSummaryReportContains(t, summary, "tcp  evil.github.com:443 policy=denied count=1")
 }
 
 func mustClientHelloBytesForTCP(t *testing.T, serverName string) []byte {

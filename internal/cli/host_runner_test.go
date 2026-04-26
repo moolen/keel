@@ -13,6 +13,7 @@ import (
 
 	"github.com/moolen/keel/internal/config"
 	"github.com/moolen/keel/internal/image"
+	"github.com/moolen/keel/internal/network"
 	"github.com/moolen/keel/internal/vm"
 	"github.com/moolen/keel/internal/workspace"
 )
@@ -503,6 +504,61 @@ func TestHostRunnerSyncsWorkspaceAfterCommandExit(t *testing.T) {
 	}
 }
 
+func TestHostRunnerPrintsNetworkSummaryAfterShutdown(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	summary := network.NewSummary()
+	summary.RecordDNS("api.github.com", network.Decision{Allowed: true})
+	summary.RecordTCP("github.com", 443, network.Decision{Allowed: false})
+
+	var stderr bytes.Buffer
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		ServiceStarter: func(context.Context, config.Config, vm.RuntimeAssets) (func(), *network.Summary, error) {
+			return func() {}, summary, nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{
+		Config:  cfg,
+		Command: []string{"/bin/sh"},
+		Stderr:  &stderr,
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	output := stderr.String()
+	if !strings.Contains(output, "Network summary:") {
+		t.Fatalf("stderr = %q, want network summary header", output)
+	}
+	if !strings.Contains(output, "dns  api.github.com:53 policy=allowed count=1") {
+		t.Fatalf("stderr = %q, want dns summary entry", output)
+	}
+	if !strings.Contains(output, "tcp  github.com:443 policy=denied count=1") {
+		t.Fatalf("stderr = %q, want tcp summary entry", output)
+	}
+}
+
 func TestHostRunnerReturnsSyncErrorAfterSuccessfulRun(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := config.Default()
@@ -550,11 +606,14 @@ func TestHostRunnerStartServicesStartsDNSAndTCPProxies(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stop, err := runner.startServices(ctx, config.Default(), assets)
+	stop, summary, err := runner.startServices(ctx, config.Default(), assets)
 	if err != nil {
 		t.Fatalf("startServices() error = %v", err)
 	}
 	defer stop()
+	if summary == nil {
+		t.Fatal("startServices() summary should not be nil")
+	}
 
 	for _, socketPath := range []string{assets.VSockPath + "_3053", assets.VSockPath + "_3128"} {
 		deadline := time.Now().Add(2 * time.Second)

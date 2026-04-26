@@ -29,6 +29,7 @@ type HostRunner struct {
 	PullImage         func(context.Context, string, string) (image.PullResult, error)
 	MachineFactory    func(config.Config, vm.RuntimeAssets) machineRunner
 	PrepareFeatures   func(string, []config.FeatureConfig) error
+	ServiceStarter    func(context.Context, config.Config, vm.RuntimeAssets) (func(), *network.Summary, error)
 }
 
 func (r HostRunner) runtimeDir() (string, error) {
@@ -60,11 +61,16 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	}
 	defer r.cleanupRuntimeAssets(assets)
 	r.warnKernelNetworkLimitations(req, assets)
-	stopServices, err := r.startServices(ctx, req.Config, assets)
+	startServices := r.ServiceStarter
+	if startServices == nil {
+		startServices = r.startServices
+	}
+	stopServices, summary, err := startServices(ctx, req.Config, assets)
 	if err != nil {
 		return err
 	}
 	defer stopServices()
+	defer r.printNetworkSummary(req, summary)
 	factory := r.MachineFactory
 	if factory == nil {
 		factory = func(cfg config.Config, assets vm.RuntimeAssets) machineRunner {
@@ -108,11 +114,12 @@ func networkPolicyConfigured(cfg config.Config) bool {
 		cfg.Network.DenyIfNoSNI
 }
 
-func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets vm.RuntimeAssets) (func(), error) {
+func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets vm.RuntimeAssets) (func(), *network.Summary, error) {
 	serviceCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 
 	tracker := network.NewTracker(60 * time.Second)
+	summary := network.NewSummary()
 	engine := network.NewPolicyEngine(network.PolicyConfig{
 		DNS: network.RuleSet{
 			Allowed: cfg.Network.DNS.Allowed,
@@ -131,9 +138,11 @@ func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets
 	dnsProxy := network.DNSProxy{
 		Policy:  engine,
 		Tracker: tracker,
+		Summary: summary,
 	}
 	tcpProxy := network.TCPProxy{
-		Policy: engine,
+		Policy:  engine,
+		Summary: summary,
 	}
 	go func() {
 		errCh <- dnsProxy.Serve(serviceCtx, assets.VSockPath)
@@ -155,20 +164,31 @@ func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets
 			}
 		}
 		if ready {
-			return cancel, nil
+			return cancel, summary, nil
 		}
 		select {
 		case err := <-errCh:
 			cancel()
-			return nil, err
+			return nil, nil, err
 		default:
 		}
 		if time.Now().After(deadline) {
 			cancel()
-			return nil, fmt.Errorf("dns proxy did not start in time")
+			return nil, nil, fmt.Errorf("dns proxy did not start in time")
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+func (r HostRunner) printNetworkSummary(req RunRequest, summary *network.Summary) {
+	if summary == nil {
+		return
+	}
+	stderr := req.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	_ = summary.WriteReport(stderr)
 }
 
 func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.RuntimeAssets, error) {

@@ -1,8 +1,10 @@
 package network
 
 import (
+	"bytes"
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ func (r *stubResolver) Exchange(_ context.Context, msg *dns.Msg) (*dns.Msg, erro
 
 func TestDNSProxyAllowsAndTracksAnswers(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
+	summary := NewSummary()
 	engine := NewPolicyEngine(PolicyConfig{
 		DNS: RuleSet{Allowed: []string{"*.github.com"}},
 	}, tracker)
@@ -39,6 +42,7 @@ func TestDNSProxyAllowsAndTracksAnswers(t *testing.T) {
 		Policy:   engine,
 		Tracker:  tracker,
 		Resolver: resolver,
+		Summary:  summary,
 		Now: func() time.Time {
 			return time.Unix(100, 0)
 		},
@@ -59,10 +63,13 @@ func TestDNSProxyAllowsAndTracksAnswers(t *testing.T) {
 	if len(domains) != 1 || domains[0] != "api.github.com" {
 		t.Fatalf("tracked domains = %#v", domains)
 	}
+
+	assertSummaryReportContains(t, summary, "dns  api.github.com:53 policy=allowed count=1")
 }
 
 func TestDNSProxyDeniesBlockedDomain(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
+	summary := NewSummary()
 	engine := NewPolicyEngine(PolicyConfig{
 		DNS: RuleSet{
 			Allowed: []string{"*.github.com"},
@@ -76,7 +83,8 @@ func TestDNSProxyDeniesBlockedDomain(t *testing.T) {
 		Policy:   engine,
 		Tracker:  tracker,
 		Resolver: resolver,
-		Now: func() time.Time { return time.Unix(100, 0) },
+		Summary:  summary,
+		Now:      func() time.Time { return time.Unix(100, 0) },
 	}
 
 	reply, err := proxy.HandleQuery(context.Background(), mustDNSQuery(t, "gist.github.com."))
@@ -89,6 +97,8 @@ func TestDNSProxyDeniesBlockedDomain(t *testing.T) {
 	if resolver.calls != 0 {
 		t.Fatalf("resolver calls = %d, want 0", resolver.calls)
 	}
+
+	assertSummaryReportContains(t, summary, "dns  gist.github.com:53 policy=denied count=1")
 }
 
 func mustDNSQuery(t *testing.T, name string) *dns.Msg {
@@ -112,4 +122,16 @@ func mustDNSResponse(t *testing.T, name, ip string, ttl uint32) *dns.Msg {
 		A: net.ParseIP(ip),
 	})
 	return msg
+}
+
+func assertSummaryReportContains(t *testing.T, summary *Summary, want string) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := summary.WriteReport(&buf); err != nil {
+		t.Fatalf("WriteReport() error = %v", err)
+	}
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("summary report = %q, want substring %q", buf.String(), want)
+	}
 }
