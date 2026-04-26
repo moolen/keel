@@ -4,6 +4,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
 )
 
 func TestParseKernelCommandLine(t *testing.T) {
@@ -97,6 +99,10 @@ func TestBootMountsCoreFilesystemsBeforeLoadingConfig(t *testing.T) {
 			calls = append(calls, "mount-workspace")
 			return nil
 		},
+		mountVolumes: func([]volumeMount, *processConfig) error {
+			calls = append(calls, "mount-volumes")
+			return nil
+		},
 		attachConsole: func() error {
 			calls = append(calls, "attach-console")
 			return nil
@@ -110,7 +116,7 @@ func TestBootMountsCoreFilesystemsBeforeLoadingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot() error = %v", err)
 	}
-	wantCalls := []string{"mount-core", "load-config", "mount-workspace", "attach-console", "run-init"}
+	wantCalls := []string{"mount-core", "load-config", "mount-workspace", "mount-volumes", "attach-console", "run-init"}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %#v, want %#v", calls, wantCalls)
 	}
@@ -146,6 +152,52 @@ func TestParseKernelCommandLineParsesProcessConfig(t *testing.T) {
 	}
 }
 
+func TestParseKernelCommandLineParsesMetadataDevice(t *testing.T) {
+	cfg, err := parseKernelCommandLine("console=ttyS0 keel.meta=/dev/vdc")
+	if err != nil {
+		t.Fatalf("parseKernelCommandLine() error = %v", err)
+	}
+	if got, want := cfg.MetadataDevice, "/dev/vdc"; got != want {
+		t.Fatalf("MetadataDevice = %q, want %q", got, want)
+	}
+}
+
+func TestApplyBootManifestSetsCommandEnvProcessAndVolumes(t *testing.T) {
+	cfg := bootConfig{}
+	applyBootManifest(&cfg, pkgboot.Manifest{
+		Command: []string{"/bin/sh", "-lc", "echo hi"},
+		CWD:     "/workspace",
+		Env: map[string]string{
+			"TERM": "xterm-256color",
+		},
+		Process: &pkgboot.ProcessConfig{
+			UID: 1000,
+			GID: 1001,
+		},
+		Volumes: []pkgboot.VolumeMount{{
+			Device:    "/dev/vdd",
+			Target:    "/cache",
+			Kind:      "dir",
+			Ownership: "process",
+		}},
+	})
+	if got, want := cfg.WorkDir, "/workspace"; got != want {
+		t.Fatalf("WorkDir = %q, want %q", got, want)
+	}
+	if len(cfg.Command) != 3 || cfg.Command[2] != "echo hi" {
+		t.Fatalf("Command = %#v", cfg.Command)
+	}
+	if got, want := cfg.Env["TERM"], "xterm-256color"; got != want {
+		t.Fatalf("Env[TERM] = %q, want %q", got, want)
+	}
+	if cfg.Process == nil || cfg.Process.UID != 1000 || cfg.Process.GID != 1001 {
+		t.Fatalf("Process = %#v", cfg.Process)
+	}
+	if len(cfg.Volumes) != 1 || cfg.Volumes[0].Device != "/dev/vdd" {
+		t.Fatalf("Volumes = %#v", cfg.Volumes)
+	}
+}
+
 func TestRunInitPassesProcessConfigToRunCommand(t *testing.T) {
 	wantProcess := &processConfig{
 		UID:               1000,
@@ -171,4 +223,37 @@ func TestRunInitPassesProcessConfigToRunCommand(t *testing.T) {
 	if !reflect.DeepEqual(gotProcess, wantProcess) {
 		t.Fatalf("Process = %#v, want %#v", gotProcess, wantProcess)
 	}
+}
+
+func TestRunInitPassesManifestEnvToRunCommand(t *testing.T) {
+	var gotEnv []string
+	err := runInit(bootConfig{
+		Command: []string{"/bin/true"},
+		Env: map[string]string{
+			"TERM": "xterm-256color",
+			"CI":   "1",
+		},
+	}, initOps{
+		chdir: func(string) error { return nil },
+		runCommand: func(_ bootConfig, env []string) error {
+			gotEnv = append([]string(nil), env...)
+			return nil
+		},
+		powerOff: func() error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("runInit() error = %v", err)
+	}
+	if !containsEnv(gotEnv, "TERM=xterm-256color") || !containsEnv(gotEnv, "CI=1") {
+		t.Fatalf("env = %#v, want TERM and CI", gotEnv)
+	}
+}
+
+func containsEnv(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }

@@ -57,8 +57,10 @@ func Default() Config {
 				Rules:   []HTTPRuleConfig{},
 			},
 		},
-		Env: map[string]string{
-			"TERM": "xterm-256color",
+		Env: EnvConfig{
+			Static: map[string]string{
+				"TERM": "xterm-256color",
+			},
 		},
 	}
 }

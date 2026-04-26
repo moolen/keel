@@ -92,15 +92,19 @@ func Load(opts LoadOptions) (Config, error) {
 			return Config{}, err
 		}
 	}
-	if err := validateConfig(cfg); err != nil {
-		return Config{}, err
-	}
 
 	cfg.ImageCacheDir = expandHome(cfg.ImageCacheDir)
 	cfg.KernelPath = expandHome(cfg.KernelPath)
 	cfg.Kernel.Path = expandHome(cfg.Kernel.Path)
 	if cfg.Kernel.Path == "" {
 		cfg.Kernel.Path = cfg.KernelPath
+	}
+	cfg.Workspace.Mount = resolveHostPath(wd, cfg.Workspace.Mount)
+	for i := range cfg.Volumes {
+		cfg.Volumes[i].Source = resolveHostPath(wd, cfg.Volumes[i].Source)
+	}
+	if err := validateConfig(cfg); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
@@ -255,13 +259,28 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	if len(src.Features) > 0 {
 		dst.Features = append([]FeatureConfig(nil), src.Features...)
 	}
-	if len(src.Env) > 0 {
-		if dst.Env == nil {
-			dst.Env = map[string]string{}
+	if src.Env.HasValues() {
+		if dst.Env.Static == nil {
+			dst.Env.Static = map[string]string{}
 		}
-		for k, v := range src.Env {
-			dst.Env[k] = v
+		for k, v := range src.Env.Static {
+			dst.Env.Static[k] = v
 		}
+		if dst.Env.FromHost == nil {
+			dst.Env.FromHost = map[string]string{}
+		}
+		for k, v := range src.Env.FromHost {
+			dst.Env.FromHost[k] = v
+		}
+		if dst.Env.FromCommand == nil {
+			dst.Env.FromCommand = map[string]EnvCommand{}
+		}
+		for k, v := range src.Env.FromCommand {
+			dst.Env.FromCommand[k] = v
+		}
+	}
+	if len(src.Volumes) > 0 {
+		dst.Volumes = append([]VolumeConfig(nil), src.Volumes...)
 	}
 	if presence.Process != nil {
 		if dst.Process == nil {
@@ -313,11 +332,50 @@ func expandHome(path string) string {
 	return filepath.Join(home, strings.TrimPrefix(path, "~/"))
 }
 
+func resolveHostPath(base, path string) string {
+	path = expandHome(path)
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(base, path)
+}
+
 func validateConfig(cfg Config) error {
-	if cfg.Process == nil {
+	if err := validateProcess(cfg.Process); err != nil {
+		return err
+	}
+	if err := validateEnv(cfg.Env); err != nil {
+		return err
+	}
+	for _, volume := range cfg.Volumes {
+		if volume.Source == "" {
+			return errors.New("volume.source is required")
+		}
+		if _, err := os.Stat(volume.Source); err != nil {
+			return err
+		}
+		if !filepath.IsAbs(volume.Target) {
+			return errors.New("volume.target must be absolute")
+		}
+		if volume.ReadOnly && volume.SyncBack {
+			return errors.New("volume.sync_back cannot be true for read_only volumes")
+		}
+		switch volume.Ownership {
+		case "", "host", "process":
+		default:
+			return errors.New("volume.ownership must be host or process")
+		}
+		if volume.Ownership == "process" && cfg.Process == nil {
+			return errors.New("volume.ownership=process requires process.uid and process.gid")
+		}
+	}
+	return nil
+}
+
+func validateProcess(process *ProcessConfig) error {
+	if process == nil {
 		return nil
 	}
-	process := cfg.Process
 	switch {
 	case process.hasUID != process.hasGID:
 		return errors.New("process.uid and process.gid must both be set")
@@ -333,6 +391,18 @@ func validateConfig(cfg Config) error {
 	for _, gid := range process.SupplementaryGIDs {
 		if gid < 0 {
 			return errors.New("process.supplementary_gids must be non-negative")
+		}
+	}
+	return nil
+}
+
+func validateEnv(env EnvConfig) error {
+	for key, entry := range env.FromCommand {
+		switch {
+		case len(entry.Command) == 0 && entry.Shell == "":
+			return errors.New("env.from_command." + key + " must set command or shell")
+		case len(entry.Command) > 0 && entry.Shell != "":
+			return errors.New("env.from_command." + key + " must not set both command and shell")
 		}
 	}
 	return nil

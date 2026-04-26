@@ -45,7 +45,8 @@ features:
       storage_driver: overlay2
 
 env:
-  TERM: xterm-256color
+  static:
+    TERM: xterm-256color
 `
 
 func newConfigCommand(deps Dependencies) *cobra.Command {

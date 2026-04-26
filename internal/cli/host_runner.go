@@ -8,13 +8,17 @@ import (
 	"path/filepath"
 	"time"
 
+	bootmeta "github.com/moolen/keel/internal/bootmanifest"
 	"github.com/moolen/keel/internal/config"
 	keelfeatures "github.com/moolen/keel/internal/features"
 	"github.com/moolen/keel/internal/hypervisor"
 	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/network"
+	"github.com/moolen/keel/internal/runtimeenv"
 	"github.com/moolen/keel/internal/vm"
+	"github.com/moolen/keel/internal/volume"
 	"github.com/moolen/keel/internal/workspace"
+	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
 )
 
 type machineRunner interface {
@@ -27,6 +31,10 @@ type HostRunner struct {
 	GuestAssets       func() (image.GuestAgentAssets, error)
 	WorkspacePreparer func(workspace.PrepareOptions) (workspace.PrepareResult, error)
 	SyncWorkspace     func(workspace.ImageSyncOptions) (workspace.SyncResult, error)
+	VolumePreparer    func(volume.PrepareOptions) (volume.PrepareResult, error)
+	SyncVolume        func(volume.SyncOptions) error
+	ResolveEnv        func(config.EnvConfig) (map[string]string, error)
+	WriteBootManifest func(string, pkgboot.Manifest) error
 	PullImage         func(context.Context, string, string) (image.PullResult, error)
 	MachineFactory    func(config.Config, vm.RuntimeAssets) machineRunner
 	PrepareFeatures   func(string, []config.FeatureConfig) error
@@ -329,6 +337,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 		KernelPath:    kernelPath,
 		RootfsPath:    layout.RootfsPath,
 		WorkspacePath: workspacePath,
+		MetadataPath:  filepath.Join(runtimeDir, "bootmeta.ext4"),
 		SocketPath:    filepath.Join(runtimeDir, "firecracker.sock"),
 		VSockPath:     filepath.Join(runtimeDir, "firecracker.vsock"),
 		LogPath:       filepath.Join(runtimeDir, "firecracker.log"),
@@ -360,6 +369,19 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	}); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
+	volumes, err := r.prepareVolumes(cfg, runtimeDir)
+	if err != nil {
+		return vm.RuntimeAssets{}, err
+	}
+	assets.Volumes = volumes
+	assets.Manifest = buildBootManifest(cfg, volumes)
+	writeBootManifest := r.WriteBootManifest
+	if writeBootManifest == nil {
+		writeBootManifest = bootmeta.WriteImage
+	}
+	if err := writeBootManifest(assets.MetadataPath, assets.Manifest); err != nil {
+		return vm.RuntimeAssets{}, err
+	}
 
 	cleanupOnError = false
 	return assets, nil
@@ -381,6 +403,15 @@ func guestTrustAssetsForConfig(cfg config.Config) (image.GuestTrustAssets, error
 
 func (r HostRunner) runtimeConfig(cfg config.Config) (config.Config, error) {
 	updated := cfg
+	resolveEnv := r.ResolveEnv
+	if resolveEnv == nil {
+		resolveEnv = runtimeenv.Resolve
+	}
+	values, err := resolveEnv(cfg.Env)
+	if err != nil {
+		return config.Config{}, err
+	}
+	updated.RuntimeEnv = values
 	features, err := runtimeFeatureConfig(cfg)
 	if err != nil {
 		return config.Config{}, err
@@ -491,27 +522,122 @@ func loadMITMCA(cfg config.Config) (*network.CA, error) {
 	})
 }
 
-func (r HostRunner) syncWorkspace(req RunRequest, assets vm.RuntimeAssets) error {
-	if !req.Config.Workspace.SyncBack {
+func (r HostRunner) prepareVolumes(cfg config.Config, runtimeDir string) ([]vm.AttachedVolume, error) {
+	if len(cfg.Volumes) == 0 {
+		return nil, nil
+	}
+	preparer := r.VolumePreparer
+	if preparer == nil {
+		preparer = volume.PrepareImage
+	}
+	items := make([]vm.AttachedVolume, 0, len(cfg.Volumes))
+	for i, item := range cfg.Volumes {
+		imagePath := filepath.Join(runtimeDir, fmt.Sprintf("volume-%02d.ext4", i))
+		result, err := preparer(volume.PrepareOptions{
+			SourcePath: item.Source,
+			ImagePath:  imagePath,
+			SizeMB:     max(cfg.Resources.DiskMB, 64),
+			Label:      fmt.Sprintf("volume%d", i),
+		})
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, vm.AttachedVolume{
+			ID:         fmt.Sprintf("volume-%02d", i),
+			ImagePath:  result.ImagePath,
+			DevicePath: vm.GuestBlockDevicePath(i + 2),
+			SourcePath: item.Source,
+			Target:     item.Target,
+			Kind:       result.Kind,
+			Subpath:    result.Subpath,
+			ReadOnly:   item.ReadOnly,
+			SyncBack:   item.SyncBack,
+			Ownership:  item.Ownership,
+		})
+	}
+	return items, nil
+}
+
+func buildBootManifest(cfg config.Config, volumes []vm.AttachedVolume) pkgboot.Manifest {
+	manifest := pkgboot.Manifest{
+		Command: append([]string(nil), cfg.Command...),
+		CWD:     cfg.Workspace.Target,
+		Env:     cloneStringMap(cfg.RuntimeEnv),
+	}
+	if manifest.CWD == "" {
+		manifest.CWD = "/workspace"
+	}
+	if cfg.Process != nil {
+		manifest.Process = &pkgboot.ProcessConfig{
+			UID:               cfg.Process.UID,
+			GID:               cfg.Process.GID,
+			SupplementaryGIDs: append([]int(nil), cfg.Process.SupplementaryGIDs...),
+		}
+	}
+	for _, item := range volumes {
+		manifest.Volumes = append(manifest.Volumes, pkgboot.VolumeMount{
+			Device:    item.DevicePath,
+			Target:    item.Target,
+			Kind:      item.Kind,
+			Subpath:   item.Subpath,
+			ReadOnly:  item.ReadOnly,
+			SyncBack:  item.SyncBack,
+			Ownership: item.Ownership,
+		})
+	}
+	return manifest
+}
+
+func cloneStringMap(items map[string]string) map[string]string {
+	if len(items) == 0 {
 		return nil
 	}
-	syncWorkspace := r.SyncWorkspace
-	if syncWorkspace == nil {
-		syncWorkspace = workspace.SyncImage
+	out := make(map[string]string, len(items))
+	for key, value := range items {
+		out[key] = value
 	}
-	hostDir := req.Config.Workspace.Mount
-	if hostDir == "" {
-		hostDir = "."
+	return out
+}
+
+func (r HostRunner) syncWorkspace(req RunRequest, assets vm.RuntimeAssets) error {
+	if req.Config.Workspace.SyncBack {
+		syncWorkspace := r.SyncWorkspace
+		if syncWorkspace == nil {
+			syncWorkspace = workspace.SyncImage
+		}
+		hostDir := req.Config.Workspace.Mount
+		if hostDir == "" {
+			hostDir = "."
+		}
+		if _, err := syncWorkspace(workspace.ImageSyncOptions{
+			HostDir:     hostDir,
+			ImagePath:   assets.WorkspacePath,
+			SyncDeletes: req.Config.Workspace.SyncDeletes,
+			Confirm:     req.Config.Workspace.SyncConfirm,
+			In:          req.Stdin,
+			Out:         req.Stderr,
+		}); err != nil {
+			return err
+		}
 	}
-	_, err := syncWorkspace(workspace.ImageSyncOptions{
-		HostDir:     hostDir,
-		ImagePath:   assets.WorkspacePath,
-		SyncDeletes: req.Config.Workspace.SyncDeletes,
-		Confirm:     req.Config.Workspace.SyncConfirm,
-		In:          req.Stdin,
-		Out:         req.Stderr,
-	})
-	return err
+	syncVolume := r.SyncVolume
+	if syncVolume == nil {
+		syncVolume = volume.SyncImage
+	}
+	for _, item := range assets.Volumes {
+		if !item.SyncBack || item.ReadOnly {
+			continue
+		}
+		if err := syncVolume(volume.SyncOptions{
+			SourcePath: item.SourcePath,
+			ImagePath:  item.ImagePath,
+			Kind:       item.Kind,
+			Subpath:    item.Subpath,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r HostRunner) prepareFeatures(rootfsPath string, configured []config.FeatureConfig) error {
@@ -555,6 +681,7 @@ func (r HostRunner) cleanupRuntimeAssets(assets vm.RuntimeAssets) {
 	}
 	for _, path := range []string{
 		assets.WorkspacePath,
+		assets.MetadataPath,
 		assets.SocketPath,
 		assets.VSockPath,
 		assets.VSockPath + "_3053",
@@ -565,5 +692,8 @@ func (r HostRunner) cleanupRuntimeAssets(assets vm.RuntimeAssets) {
 			continue
 		}
 		_ = os.RemoveAll(path)
+	}
+	for _, item := range assets.Volumes {
+		_ = os.RemoveAll(item.ImagePath)
 	}
 }

@@ -18,7 +18,9 @@ import (
 	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/network"
 	"github.com/moolen/keel/internal/vm"
+	"github.com/moolen/keel/internal/volume"
 	"github.com/moolen/keel/internal/workspace"
+	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
 )
 
 func TestHostRunnerDryRunPrintsSummary(t *testing.T) {
@@ -123,6 +125,92 @@ func TestHostRunnerReturnsWorkspacePrepareError(t *testing.T) {
 	err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("Run() error = %v, want propagated workspace failure", err)
+	}
+}
+
+func TestHostRunnerRuntimeConfigMaterializesEnv(t *testing.T) {
+	cfg := config.Default()
+	cfg.Env.Static["CI"] = "1"
+	cfg.Env.FromHost = map[string]string{
+		"TOKEN": "HOST_TOKEN",
+	}
+	t.Setenv("HOST_TOKEN", "secret")
+
+	runner := HostRunner{
+		ResolveEnv: func(env config.EnvConfig) (map[string]string, error) {
+			return map[string]string{
+				"CI":    env.Static["CI"],
+				"TOKEN": "secret",
+			}, nil
+		},
+	}
+	runtimeCfg, err := runner.runtimeConfig(cfg)
+	if err != nil {
+		t.Fatalf("runtimeConfig() error = %v", err)
+	}
+	if got, want := runtimeCfg.RuntimeEnv["TOKEN"], "secret"; got != want {
+		t.Fatalf("runtime env TOKEN = %q, want %q", got, want)
+	}
+}
+
+func TestHostRunnerPreparesVolumeAndMetadataAssets(t *testing.T) {
+	tempDir := t.TempDir()
+	sourceDir := t.TempDir()
+	volumeDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = sourceDir
+	cfg.Workspace.Target = "/workspace"
+	cfg.RuntimeEnv = map[string]string{"TERM": "xterm-256color"}
+	cfg.Volumes = []config.VolumeConfig{{
+		Source:    volumeDir,
+		Target:    "/cache",
+		Ownership: "host",
+	}}
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var manifest pkgboot.Manifest
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		VolumePreparer: func(opts volume.PrepareOptions) (volume.PrepareResult, error) {
+			return volume.PrepareResult{ImagePath: opts.ImagePath, Kind: "dir"}, nil
+		},
+		WriteBootManifest: func(path string, item pkgboot.Manifest) error {
+			manifest = item
+			return os.WriteFile(path, []byte("meta"), 0o644)
+		},
+		GuestAssets: func() (image.GuestAgentAssets, error) {
+			return image.GuestAgentAssets{}, nil
+		},
+		PrepareFeatures: func(string, []config.FeatureConfig) error { return nil },
+	}
+
+	assets, err := runner.prepareAssets(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("prepareAssets() error = %v", err)
+	}
+	if got, want := len(assets.Volumes), 1; got != want {
+		t.Fatalf("len(assets.Volumes) = %d, want %d", got, want)
+	}
+	if got, want := assets.Volumes[0].DevicePath, "/dev/vdd"; got != want {
+		t.Fatalf("assets.Volumes[0].DevicePath = %q, want %q", got, want)
+	}
+	if got, want := manifest.Volumes[0].Target, "/cache"; got != want {
+		t.Fatalf("manifest volume target = %q, want %q", got, want)
 	}
 }
 

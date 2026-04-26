@@ -12,6 +12,7 @@ import (
 
 	"github.com/moolen/keel/internal/config"
 	"github.com/moolen/keel/internal/hypervisor"
+	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
 )
 
 func TestValidateRequiresKernelAndRootfs(t *testing.T) {
@@ -37,6 +38,7 @@ func TestBuildHypervisorConfigUsesRuntimeAssets(t *testing.T) {
 		KernelPath:    "/tmp/vmlinux",
 		RootfsPath:    "/tmp/rootfs.ext4",
 		WorkspacePath: "/tmp/workspace.ext4",
+		MetadataPath:  "/tmp/bootmeta.ext4",
 		SocketPath:    "/tmp/firecracker.sock",
 		VSockPath:     "/tmp/firecracker.vsock",
 		LogPath:       "/tmp/firecracker.log",
@@ -59,18 +61,20 @@ func TestBuildHypervisorConfigUsesRuntimeAssets(t *testing.T) {
 	if !strings.Contains(hvCfg.KernelArgs, "root=/dev/vda") {
 		t.Fatalf("KernelArgs missing root device: %q", hvCfg.KernelArgs)
 	}
-	if !strings.Contains(hvCfg.KernelArgs, "keel.cwd=/workspace") {
-		t.Fatalf("KernelArgs missing cwd: %q", hvCfg.KernelArgs)
-	}
-	command := decodeKernelCommand(t, hvCfg.KernelArgs)
-	if len(command) != 3 || command[2] != "echo hi" {
-		t.Fatalf("decoded command = %#v", command)
+	if !strings.Contains(hvCfg.KernelArgs, "keel.meta=/dev/vdc") {
+		t.Fatalf("KernelArgs missing metadata device: %q", hvCfg.KernelArgs)
 	}
 	if got, want := hvCfg.RootDrive.Path, "/tmp/rootfs.ext4"; got != want {
 		t.Fatalf("RootDrive.Path = %q, want %q", got, want)
 	}
-	if len(hvCfg.ExtraDrives) != 1 {
-		t.Fatalf("len(ExtraDrives) = %d, want 1", len(hvCfg.ExtraDrives))
+	if len(hvCfg.ExtraDrives) != 2 {
+		t.Fatalf("len(ExtraDrives) = %d, want 2", len(hvCfg.ExtraDrives))
+	}
+	if got, want := hvCfg.ExtraDrives[0].Path, "/tmp/workspace.ext4"; got != want {
+		t.Fatalf("ExtraDrives[0].Path = %q, want %q", got, want)
+	}
+	if got, want := hvCfg.ExtraDrives[1].Path, "/tmp/bootmeta.ext4"; got != want {
+		t.Fatalf("ExtraDrives[1].Path = %q, want %q", got, want)
 	}
 }
 
@@ -87,6 +91,7 @@ func TestBuildHypervisorConfigEncodesFeaturesInKernelArgs(t *testing.T) {
 		KernelPath:    "/tmp/vmlinux",
 		RootfsPath:    "/tmp/rootfs.ext4",
 		WorkspacePath: "/tmp/workspace.ext4",
+		MetadataPath:  "/tmp/bootmeta.ext4",
 		SocketPath:    "/tmp/firecracker.sock",
 		VSockPath:     "/tmp/firecracker.vsock",
 		LogPath:       "/tmp/firecracker.log",
@@ -106,37 +111,36 @@ func TestBuildHypervisorConfigEncodesFeaturesInKernelArgs(t *testing.T) {
 	}
 }
 
-func TestBuildHypervisorConfigEncodesProcessInKernelArgs(t *testing.T) {
+func TestBuildHypervisorConfigIncludesConfiguredVolumes(t *testing.T) {
 	cfg := config.Default()
-	cfg.Process = &config.ProcessConfig{
-		UID:               1000,
-		GID:               1001,
-		SupplementaryGIDs: []int{27, 44},
-	}
-
 	machine := NewMachine(cfg, RuntimeAssets{
 		KernelPath:    "/tmp/vmlinux",
 		RootfsPath:    "/tmp/rootfs.ext4",
 		WorkspacePath: "/tmp/workspace.ext4",
+		MetadataPath:  "/tmp/bootmeta.ext4",
 		SocketPath:    "/tmp/firecracker.sock",
 		VSockPath:     "/tmp/firecracker.vsock",
 		LogPath:       "/tmp/firecracker.log",
 		CID:           52,
+		Volumes: []AttachedVolume{{
+			ID:        "volume-00",
+			ImagePath: "/tmp/volume-00.ext4",
+			ReadOnly:  true,
+		}},
 	})
 
 	hvCfg, err := machine.BuildHypervisorConfig()
 	if err != nil {
 		t.Fatalf("BuildHypervisorConfig() error = %v", err)
 	}
-	process := decodeKernelProcess(t, hvCfg.KernelArgs)
-	if got, want := process.UID, 1000; got != want {
-		t.Fatalf("decoded UID = %d, want %d", got, want)
+	if len(hvCfg.ExtraDrives) != 3 {
+		t.Fatalf("len(ExtraDrives) = %d, want 3", len(hvCfg.ExtraDrives))
 	}
-	if got, want := process.GID, 1001; got != want {
-		t.Fatalf("decoded GID = %d, want %d", got, want)
+	if got, want := hvCfg.ExtraDrives[2].Path, "/tmp/volume-00.ext4"; got != want {
+		t.Fatalf("ExtraDrives[2].Path = %q, want %q", got, want)
 	}
-	if got, want := process.SupplementaryGIDs, []int{27, 44}; !equalIntSlice(got, want) {
-		t.Fatalf("decoded supplementary gids = %#v, want %#v", got, want)
+	if !hvCfg.ExtraDrives[2].ReadOnly {
+		t.Fatal("ExtraDrives[2].ReadOnly = false, want true")
 	}
 }
 
@@ -147,6 +151,7 @@ func TestBuildHypervisorConfigIncludesGuestNetworkInterface(t *testing.T) {
 		KernelPath:    "/tmp/vmlinux",
 		RootfsPath:    "/tmp/rootfs.ext4",
 		WorkspacePath: "/tmp/workspace.ext4",
+		MetadataPath:  "/tmp/bootmeta.ext4",
 		SocketPath:    "/tmp/firecracker.sock",
 		VSockPath:     "/tmp/firecracker.vsock",
 		LogPath:       "/tmp/firecracker.log",
@@ -254,12 +259,16 @@ func createRuntimeAssets(t *testing.T) RuntimeAssets {
 		KernelPath:    filepath.Join(dir, "vmlinux"),
 		RootfsPath:    filepath.Join(dir, "rootfs.ext4"),
 		WorkspacePath: filepath.Join(dir, "workspace.ext4"),
+		MetadataPath:  filepath.Join(dir, "bootmeta.ext4"),
 		SocketPath:    filepath.Join(dir, "firecracker.sock"),
 		VSockPath:     filepath.Join(dir, "firecracker.vsock"),
 		LogPath:       filepath.Join(dir, "firecracker.log"),
 		CID:           52,
+		Manifest: pkgboot.Manifest{
+			Command: []string{"/bin/sh"},
+		},
 	}
-	for _, path := range []string{assets.KernelPath, assets.RootfsPath, assets.WorkspacePath} {
+	for _, path := range []string{assets.KernelPath, assets.RootfsPath, assets.WorkspacePath, assets.MetadataPath} {
 		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
 			t.Fatalf("WriteFile(%q) error = %v", path, err)
 		}
@@ -300,27 +309,6 @@ func (stubVM) VSockConnect(uint32) (net.Conn, error) {
 	return client, nil
 }
 
-func decodeKernelCommand(t *testing.T, kernelArgs string) []string {
-	t.Helper()
-	for _, field := range strings.Fields(kernelArgs) {
-		if !strings.HasPrefix(field, "keel.cmd=") {
-			continue
-		}
-		encoded := strings.TrimPrefix(field, "keel.cmd=")
-		data, err := base64.RawURLEncoding.DecodeString(encoded)
-		if err != nil {
-			t.Fatalf("DecodeString() error = %v", err)
-		}
-		var command []string
-		if err := json.Unmarshal(data, &command); err != nil {
-			t.Fatalf("Unmarshal() error = %v", err)
-		}
-		return command
-	}
-	t.Fatalf("keel.cmd not found in %q", kernelArgs)
-	return nil
-}
-
 func decodeKernelFeatures(t *testing.T, kernelArgs string) []config.FeatureConfig {
 	t.Helper()
 	for _, field := range strings.Fields(kernelArgs) {
@@ -340,37 +328,4 @@ func decodeKernelFeatures(t *testing.T, kernelArgs string) []config.FeatureConfi
 	}
 	t.Fatalf("keel.features not found in %q", kernelArgs)
 	return nil
-}
-
-func decodeKernelProcess(t *testing.T, kernelArgs string) config.ProcessConfig {
-	t.Helper()
-	for _, field := range strings.Fields(kernelArgs) {
-		if !strings.HasPrefix(field, "keel.process=") {
-			continue
-		}
-		encoded := strings.TrimPrefix(field, "keel.process=")
-		data, err := base64.RawURLEncoding.DecodeString(encoded)
-		if err != nil {
-			t.Fatalf("DecodeString() error = %v", err)
-		}
-		var process config.ProcessConfig
-		if err := json.Unmarshal(data, &process); err != nil {
-			t.Fatalf("Unmarshal() error = %v", err)
-		}
-		return process
-	}
-	t.Fatalf("keel.process not found in %q", kernelArgs)
-	return config.ProcessConfig{}
-}
-
-func equalIntSlice(got, want []int) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
 }

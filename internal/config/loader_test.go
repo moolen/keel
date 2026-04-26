@@ -45,7 +45,8 @@ features:
     config:
       storage_driver: overlay2
 env:
-  CI: "1"
+  static:
+    CI: "1"
 `)
 
 	cfg, err := Load(LoadOptions{
@@ -82,7 +83,7 @@ env:
 	if len(cfg.Features) != 1 || cfg.Features[0].Name != "docker" {
 		t.Fatalf("unexpected features: %#v", cfg.Features)
 	}
-	if cfg.Env["CI"] != "1" || cfg.Env["TERM"] != "xterm-256color" {
+	if cfg.Env.Static["CI"] != "1" || cfg.Env.Static["TERM"] != "xterm-256color" {
 		t.Fatalf("unexpected env: %#v", cfg.Env)
 	}
 }
@@ -478,6 +479,91 @@ func TestLoadRejectsInvalidProcessConfig(t *testing.T) {
 				t.Fatal("Load() error = nil, want non-nil")
 			}
 			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadParsesStructuredEnvAndVolumes(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	volumeDir := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte(`
+process:
+  uid: 1000
+  gid: 1000
+volumes:
+  - source: `+volumeDir+`
+    target: /cache
+    ownership: process
+env:
+  static:
+    CI: "1"
+  from_host:
+    TOKEN: HOST_TOKEN
+  from_command:
+    BUILD_SHA:
+      command: ["sh", "-lc", "printf abc123\\n"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOST_TOKEN", "secret")
+
+	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got, want := cfg.Env.Static["CI"], "1"; got != want {
+		t.Fatalf("cfg.Env.Static[CI] = %q, want %q", got, want)
+	}
+	if got, want := cfg.Env.FromHost["TOKEN"], "HOST_TOKEN"; got != want {
+		t.Fatalf("cfg.Env.FromHost[TOKEN] = %q, want %q", got, want)
+	}
+	if got, want := cfg.Volumes[0].Target, "/cache"; got != want {
+		t.Fatalf("cfg.Volumes[0].Target = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidVolumeAndEnvCommandConfig(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "relative target",
+			yaml: "volumes:\n  - source: " + projectDir + "\n    target: cache\n",
+			want: "absolute",
+		},
+		{
+			name: "read only sync back",
+			yaml: "volumes:\n  - source: " + projectDir + "\n    target: /cache\n    read_only: true\n    sync_back: true\n",
+			want: "sync_back",
+		},
+		{
+			name: "invalid command resolver",
+			yaml: "env:\n  from_command:\n    BAD:\n      command: [\"echo\", \"x\"]\n      shell: \"echo x\"\n",
+			want: "must not set both",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(LoadOptions{WorkingDir: projectDir})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Load() error = %v, want substring %q", err, tt.want)
 			}
 		})

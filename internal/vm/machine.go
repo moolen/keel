@@ -14,12 +14,14 @@ import (
 	"github.com/moolen/keel/internal/config"
 	"github.com/moolen/keel/internal/hypervisor"
 	keelpty "github.com/moolen/keel/internal/pty"
+	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
 )
 
 type RuntimeAssets struct {
 	KernelPath    string
 	RootfsPath    string
 	WorkspacePath string
+	MetadataPath  string
 	SocketPath    string
 	VSockPath     string
 	LogPath       string
@@ -27,6 +29,21 @@ type RuntimeAssets struct {
 	CleanupDir    bool
 	CID           uint32
 	Network       *GuestNetwork
+	Volumes       []AttachedVolume
+	Manifest      pkgboot.Manifest
+}
+
+type AttachedVolume struct {
+	ID         string
+	ImagePath  string
+	DevicePath string
+	SourcePath string
+	Target     string
+	Kind       string
+	Subpath    string
+	ReadOnly   bool
+	SyncBack   bool
+	Ownership  string
 }
 
 type Machine struct {
@@ -49,6 +66,8 @@ func (m *Machine) Validate() error {
 		return fmt.Errorf("rootfs path is required")
 	case m.Assets.WorkspacePath == "":
 		return fmt.Errorf("workspace path is required")
+	case m.Assets.MetadataPath == "":
+		return fmt.Errorf("metadata path is required")
 	case m.Assets.SocketPath == "":
 		return fmt.Errorf("firecracker socket path is required")
 	case m.Assets.VSockPath == "":
@@ -64,6 +83,25 @@ func (m *Machine) BuildHypervisorConfig() (hypervisor.Config, error) {
 		return hypervisor.Config{}, err
 	}
 
+	extraDrives := []hypervisor.DriveConfig{
+		{
+			ID:   "workspace",
+			Path: m.Assets.WorkspacePath,
+		},
+		{
+			ID:       "bootmeta",
+			Path:     m.Assets.MetadataPath,
+			ReadOnly: true,
+		},
+	}
+	for _, volume := range m.Assets.Volumes {
+		extraDrives = append(extraDrives, hypervisor.DriveConfig{
+			ID:       volume.ID,
+			Path:     volume.ImagePath,
+			ReadOnly: volume.ReadOnly,
+		})
+	}
+
 	return hypervisor.Config{
 		KernelPath: m.Assets.KernelPath,
 		KernelArgs: m.kernelArgs(),
@@ -72,10 +110,7 @@ func (m *Machine) BuildHypervisorConfig() (hypervisor.Config, error) {
 			Path:   m.Assets.RootfsPath,
 			IsRoot: true,
 		},
-		ExtraDrives: []hypervisor.DriveConfig{{
-			ID:   "workspace",
-			Path: m.Assets.WorkspacePath,
-		}},
+		ExtraDrives:       extraDrives,
 		VCPUs:             m.Config.Resources.VCPU,
 		MemoryMB:          m.Config.Resources.MemoryMB,
 		VSockCID:          m.Assets.CID,
@@ -121,6 +156,7 @@ func (m *Machine) Prepare(ctx context.Context) (hypervisor.VM, func(), error) {
 		{label: "kernel image", path: m.Assets.KernelPath},
 		{label: "rootfs", path: m.Assets.RootfsPath},
 		{label: "workspace", path: m.Assets.WorkspacePath},
+		{label: "metadata", path: m.Assets.MetadataPath},
 	} {
 		if _, err := os.Stat(asset.path); err != nil {
 			cleanupNetwork()
@@ -195,38 +231,14 @@ func (m *Machine) kernelArgs() string {
 		"rw",
 		"init=/usr/local/bin/keel-agent",
 	}
-	if len(m.Config.Command) > 0 {
-		encoded, err := encodeKernelCommand(m.Config.Command)
-		if err == nil && encoded != "" {
-			args = append(args, "keel.cmd="+encoded)
-		}
-	}
 	if len(m.Config.Features) > 0 {
 		encoded, err := encodeKernelFeatures(m.Config.Features)
 		if err == nil && encoded != "" {
 			args = append(args, "keel.features="+encoded)
 		}
 	}
-	if m.Config.Process != nil {
-		encoded, err := encodeKernelProcess(*m.Config.Process)
-		if err == nil && encoded != "" {
-			args = append(args, "keel.process="+encoded)
-		}
-	}
-	target := m.Config.Workspace.Target
-	if target == "" {
-		target = "/workspace"
-	}
-	args = append(args, "keel.cwd="+target)
+	args = append(args, "keel.meta="+GuestBlockDevicePath(1))
 	return strings.Join(args, " ")
-}
-
-func encodeKernelCommand(command []string) (string, error) {
-	data, err := json.Marshal(command)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(data), nil
 }
 
 func encodeKernelFeatures(features []config.FeatureConfig) (string, error) {
@@ -237,12 +249,8 @@ func encodeKernelFeatures(features []config.FeatureConfig) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(data), nil
 }
 
-func encodeKernelProcess(process config.ProcessConfig) (string, error) {
-	data, err := json.Marshal(process)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(data), nil
+func GuestBlockDevicePath(extraIndex int) string {
+	return "/dev/vd" + string(rune('b'+extraIndex))
 }
 
 func prepareRuntimePaths(assets RuntimeAssets) error {

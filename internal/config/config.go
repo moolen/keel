@@ -8,13 +8,15 @@ type Config struct {
 	Kernel           KernelConfig      `yaml:"kernel"`
 	Resources        ResourceConfig    `yaml:"resources"`
 	Workspace        WorkspaceConfig   `yaml:"workspace"`
+	Volumes          []VolumeConfig    `yaml:"volumes"`
 	Network          NetworkConfig     `yaml:"network"`
 	Process          *ProcessConfig    `yaml:"process"`
 	Features         []FeatureConfig   `yaml:"features"`
-	Env              map[string]string `yaml:"env"`
+	Env              EnvConfig         `yaml:"env"`
 	Command          []string          `yaml:"-"`
 	Verbose          bool              `yaml:"-"`
 	DryRun           bool              `yaml:"-"`
+	RuntimeEnv       map[string]string `yaml:"-"`
 }
 
 type KernelConfig struct {
@@ -33,6 +35,14 @@ type WorkspaceConfig struct {
 	SyncBack    bool   `yaml:"sync_back"`
 	SyncDeletes bool   `yaml:"sync_deletes"`
 	SyncConfirm bool   `yaml:"sync_confirm"`
+}
+
+type VolumeConfig struct {
+	Source    string `yaml:"source"`
+	Target    string `yaml:"target"`
+	ReadOnly  bool   `yaml:"read_only"`
+	SyncBack  bool   `yaml:"sync_back"`
+	Ownership string `yaml:"ownership"`
 }
 
 type NetworkConfig struct {
@@ -102,6 +112,17 @@ type ProcessConfig struct {
 	hasUID               bool `yaml:"-" json:"-"`
 	hasGID               bool `yaml:"-" json:"-"`
 	hasSupplementaryGIDs bool `yaml:"-" json:"-"`
+}
+
+type EnvConfig struct {
+	Static      map[string]string     `yaml:"static"`
+	FromHost    map[string]string     `yaml:"from_host"`
+	FromCommand map[string]EnvCommand `yaml:"from_command"`
+}
+
+type EnvCommand struct {
+	Command []string `yaml:"command"`
+	Shell   string   `yaml:"shell"`
 }
 
 type FeatureConfig struct {

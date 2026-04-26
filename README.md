@@ -202,6 +202,23 @@ workspace:
   # Ask for confirmation before applying sync-back changes.
   sync_confirm: true
 
+volumes:
+  # Extra host file or directory paths attached as separate block devices.
+  - source: ./.cache/pip
+
+    # Absolute guest target path. Directories mount directly; files bind-mount.
+    target: /cache/pip
+
+    # Mount read-only inside the guest.
+    read_only: false
+
+    # Copy changes back to the host source on exit for writable volumes.
+    sync_back: false
+
+    # Leave host-created ownership as-is, or chown the mounted target root
+    # to the configured process uid/gid before exec.
+    ownership: process
+
 network:
   # Transport mode for host/guest service wiring.
   # Current real implementation uses vsock-backed host services.
@@ -305,8 +322,27 @@ features:
       # Optional registry mirror list passed to dockerd.
       registry_mirrors: []
 
+process:
+  # Optional credential drop for the final workload command.
+  uid: 1000
+  gid: 1000
+  supplementary_gids: [27]
+
 env:
-  TERM: xterm-256color
+  static:
+    TERM: xterm-256color
+    PIP_CACHE_DIR: /cache/pip
+
+  from_host:
+    # guest env name: host env name
+    GITHUB_TOKEN: GITHUB_TOKEN
+
+  from_command:
+    # command-backed values are resolved on the host before boot.
+    BUILD_SHA:
+      command: ["git", "rev-parse", "HEAD"]
+    OP_SESSION:
+      shell: "op read op://dev/session/token"
 ```
 
 ## How config resolution works

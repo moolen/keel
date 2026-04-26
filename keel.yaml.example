@@ -12,6 +12,13 @@ workspace:
   sync_deletes: false
   sync_confirm: true
 
+volumes:
+  - source: ./.cache/pip
+    target: /cache/pip
+    read_only: false
+    sync_back: false
+    ownership: process
+
 network:
   mode: vsock
   deny_if_no_sni: false
@@ -43,5 +50,16 @@ features:
     config:
       storage_driver: overlay2
 
+process:
+  uid: 1000
+  gid: 1000
+
 env:
-  TERM: xterm-256color
+  static:
+    TERM: xterm-256color
+    PIP_CACHE_DIR: /cache/pip
+  from_host:
+    GITHUB_TOKEN: GITHUB_TOKEN
+  from_command:
+    BUILD_SHA:
+      command: ["git", "rev-parse", "HEAD"]

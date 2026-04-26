@@ -12,16 +12,29 @@ import (
 
 	guestinternal "github.com/moolen/keel/guest/internal"
 	guestfeatures "github.com/moolen/keel/guest/internal/features"
+	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
 )
 
 type bootConfig struct {
-	Command  []string
-	WorkDir  string
-	Features []guestfeatures.ConfiguredFeature
-	Process  *processConfig
+	Command        []string
+	WorkDir        string
+	Features       []guestfeatures.ConfiguredFeature
+	Process        *processConfig
+	Env            map[string]string
+	Volumes        []volumeMount
+	MetadataDevice string
 }
 
 type processConfig = guestinternal.ProcessConfig
+
+type volumeMount struct {
+	Device    string
+	Target    string
+	Kind      string
+	Subpath   string
+	ReadOnly  bool
+	Ownership string
+}
 
 type initOps struct {
 	chdir      func(string) error
@@ -33,6 +46,7 @@ type bootOps struct {
 	loadBootConfig       func() (bootConfig, error)
 	mountCoreFilesystems func() error
 	mountWorkspace       func(string) error
+	mountVolumes         func([]volumeMount, *processConfig) error
 	attachConsole        func() error
 	runInit              func(bootConfig, initOps) error
 	initOps              initOps
@@ -43,6 +57,7 @@ func Run() error {
 		loadBootConfig:       loadBootConfig,
 		mountCoreFilesystems: mountCoreFilesystems,
 		mountWorkspace:       mountWorkspace,
+		mountVolumes:         mountVolumes,
 		attachConsole:        attachConsole,
 		runInit:              runInit,
 		initOps: initOps{
@@ -64,6 +79,9 @@ func boot(ops bootOps) error {
 	if err := ops.mountWorkspace(cfg.WorkDir); err != nil {
 		return err
 	}
+	if err := ops.mountVolumes(cfg.Volumes, cfg.Process); err != nil {
+		return err
+	}
 	if err := ops.attachConsole(); err != nil {
 		return err
 	}
@@ -75,7 +93,19 @@ func loadBootConfig() (bootConfig, error) {
 	if err != nil {
 		return bootConfig{}, err
 	}
-	return parseKernelCommandLine(strings.TrimSpace(string(data)))
+	cfg, err := parseKernelCommandLine(strings.TrimSpace(string(data)))
+	if err != nil {
+		return bootConfig{}, err
+	}
+	if cfg.MetadataDevice == "" {
+		return cfg, nil
+	}
+	manifest, err := guestinternal.LoadBootManifest(cfg.MetadataDevice)
+	if err != nil {
+		return bootConfig{}, err
+	}
+	applyBootManifest(&cfg, manifest)
+	return cfg, nil
 }
 
 func parseKernelCommandLine(cmdline string) (bootConfig, error) {
@@ -114,9 +144,46 @@ func parseKernelCommandLine(cmdline string) (bootConfig, error) {
 			if err := json.Unmarshal(data, cfg.Process); err != nil {
 				return bootConfig{}, err
 			}
+		case strings.HasPrefix(field, "keel.meta="):
+			cfg.MetadataDevice = strings.TrimPrefix(field, "keel.meta=")
 		}
 	}
 	return cfg, nil
+}
+
+func applyBootManifest(cfg *bootConfig, manifest pkgboot.Manifest) {
+	if len(manifest.Command) > 0 {
+		cfg.Command = append([]string(nil), manifest.Command...)
+	}
+	if manifest.CWD != "" {
+		cfg.WorkDir = manifest.CWD
+	}
+	if len(manifest.Env) > 0 {
+		cfg.Env = make(map[string]string, len(manifest.Env))
+		for key, value := range manifest.Env {
+			cfg.Env[key] = value
+		}
+	}
+	if manifest.Process != nil {
+		cfg.Process = &processConfig{
+			UID:               manifest.Process.UID,
+			GID:               manifest.Process.GID,
+			SupplementaryGIDs: append([]int(nil), manifest.Process.SupplementaryGIDs...),
+		}
+	}
+	if len(manifest.Volumes) > 0 {
+		cfg.Volumes = make([]volumeMount, 0, len(manifest.Volumes))
+		for _, item := range manifest.Volumes {
+			cfg.Volumes = append(cfg.Volumes, volumeMount{
+				Device:    item.Device,
+				Target:    item.Target,
+				Kind:      item.Kind,
+				Subpath:   item.Subpath,
+				ReadOnly:  item.ReadOnly,
+				Ownership: item.Ownership,
+			})
+		}
+	}
 }
 
 func mountCoreFilesystems() error {
@@ -193,6 +260,65 @@ func mountWorkspace(target string) error {
 	return fmt.Errorf("mount workspace: %w", lastErr)
 }
 
+func mountVolumes(volumes []volumeMount, process *processConfig) error {
+	if len(volumes) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll("/run/keel-volumes", 0o755); err != nil {
+		return err
+	}
+	for i, volume := range volumes {
+		flags := uintptr(0)
+		if volume.ReadOnly {
+			flags |= syscall.MS_RDONLY
+		}
+		switch volume.Kind {
+		case "dir":
+			if err := os.MkdirAll(volume.Target, 0o755); err != nil {
+				return err
+			}
+			if err := syscall.Mount(volume.Device, volume.Target, "ext4", flags, ""); err != nil && err != syscall.EBUSY {
+				return err
+			}
+			if err := applyVolumeOwnership(volume.Target, volume, process); err != nil {
+				return err
+			}
+		case "file":
+			stage := filepath.Join("/run/keel-volumes", fmt.Sprintf("volume-%02d", i))
+			if err := os.MkdirAll(stage, 0o755); err != nil {
+				return err
+			}
+			if err := syscall.Mount(volume.Device, stage, "ext4", flags, ""); err != nil && err != syscall.EBUSY {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(volume.Target), 0o755); err != nil {
+				return err
+			}
+			file, err := os.OpenFile(volume.Target, os.O_CREATE, 0o644)
+			if err == nil {
+				_ = file.Close()
+			} else if !os.IsExist(err) {
+				return err
+			}
+			source := filepath.Join(stage, volume.Subpath)
+			if err := syscall.Mount(source, volume.Target, "", syscall.MS_BIND, ""); err != nil && err != syscall.EBUSY {
+				return err
+			}
+			if err := applyVolumeOwnership(volume.Target, volume, process); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func applyVolumeOwnership(target string, volume volumeMount, process *processConfig) error {
+	if volume.ReadOnly || volume.Ownership != "process" || process == nil {
+		return nil
+	}
+	return os.Chown(target, process.UID, process.GID)
+}
+
 func attachConsole() error {
 	consolePath := "/dev/console"
 	if err := os.MkdirAll(filepath.Dir(consolePath), 0o755); err != nil {
@@ -220,7 +346,7 @@ func runInit(cfg bootConfig, ops initOps) error {
 	if len(cfg.Command) == 0 {
 		cfg.Command = []string{"/bin/sh"}
 	}
-	if err := ops.runCommand(cfg, os.Environ()); err != nil {
+	if err := ops.runCommand(cfg, guestinternal.EnvListFromMap(cfg.Env, os.Environ())); err != nil {
 		return err
 	}
 	return ops.powerOff()
