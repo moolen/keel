@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/moolen/keel/internal/config"
+	"github.com/moolen/keel/internal/hypervisor"
 )
 
 func TestValidateRequiresKernelAndRootfs(t *testing.T) {
@@ -26,7 +26,7 @@ func TestValidateRequiresKernelAndRootfs(t *testing.T) {
 	}
 }
 
-func TestBuildConfigUsesRuntimeAssets(t *testing.T) {
+func TestBuildHypervisorConfigUsesRuntimeAssets(t *testing.T) {
 	cfg := config.Default()
 	cfg.Resources.VCPU = 4
 	cfg.Resources.MemoryMB = 3072
@@ -43,38 +43,38 @@ func TestBuildConfigUsesRuntimeAssets(t *testing.T) {
 		CID:           52,
 	})
 
-	fcCfg, err := machine.BuildConfig()
+	hvCfg, err := machine.BuildHypervisorConfig()
 	if err != nil {
-		t.Fatalf("BuildConfig() error = %v", err)
+		t.Fatalf("BuildHypervisorConfig() error = %v", err)
 	}
-	if got, want := fcCfg.SocketPath, "/tmp/firecracker.sock"; got != want {
+	if got, want := hvCfg.SocketPath, "/tmp/firecracker.sock"; got != want {
 		t.Fatalf("SocketPath = %q, want %q", got, want)
 	}
-	if got, want := *fcCfg.MachineCfg.VcpuCount, int64(4); got != want {
+	if got, want := hvCfg.VCPUs, 4; got != want {
 		t.Fatalf("VcpuCount = %d, want %d", got, want)
 	}
-	if got, want := *fcCfg.MachineCfg.MemSizeMib, int64(3072); got != want {
+	if got, want := hvCfg.MemoryMB, 3072; got != want {
 		t.Fatalf("MemSizeMib = %d, want %d", got, want)
 	}
-	if !strings.Contains(fcCfg.KernelArgs, "root=/dev/vda") {
-		t.Fatalf("KernelArgs missing root device: %q", fcCfg.KernelArgs)
+	if !strings.Contains(hvCfg.KernelArgs, "root=/dev/vda") {
+		t.Fatalf("KernelArgs missing root device: %q", hvCfg.KernelArgs)
 	}
-	if !strings.Contains(fcCfg.KernelArgs, "keel.cwd=/workspace") {
-		t.Fatalf("KernelArgs missing cwd: %q", fcCfg.KernelArgs)
+	if !strings.Contains(hvCfg.KernelArgs, "keel.cwd=/workspace") {
+		t.Fatalf("KernelArgs missing cwd: %q", hvCfg.KernelArgs)
 	}
-	command := decodeKernelCommand(t, fcCfg.KernelArgs)
+	command := decodeKernelCommand(t, hvCfg.KernelArgs)
 	if len(command) != 3 || command[2] != "echo hi" {
 		t.Fatalf("decoded command = %#v", command)
 	}
-	if len(fcCfg.Drives) != 2 {
-		t.Fatalf("len(Drives) = %d, want 2", len(fcCfg.Drives))
+	if got, want := hvCfg.RootDrive.Path, "/tmp/rootfs.ext4"; got != want {
+		t.Fatalf("RootDrive.Path = %q, want %q", got, want)
 	}
-	if len(fcCfg.ForwardSignals) != 0 {
-		t.Fatalf("ForwardSignals = %#v, want disabled signal forwarding", fcCfg.ForwardSignals)
+	if len(hvCfg.ExtraDrives) != 1 {
+		t.Fatalf("len(ExtraDrives) = %d, want 1", len(hvCfg.ExtraDrives))
 	}
 }
 
-func TestBuildConfigEncodesFeaturesInKernelArgs(t *testing.T) {
+func TestBuildHypervisorConfigEncodesFeaturesInKernelArgs(t *testing.T) {
 	cfg := config.Default()
 	cfg.Features = []config.FeatureConfig{{
 		Name: "docker",
@@ -93,11 +93,11 @@ func TestBuildConfigEncodesFeaturesInKernelArgs(t *testing.T) {
 		CID:           52,
 	})
 
-	fcCfg, err := machine.BuildConfig()
+	hvCfg, err := machine.BuildHypervisorConfig()
 	if err != nil {
-		t.Fatalf("BuildConfig() error = %v", err)
+		t.Fatalf("BuildHypervisorConfig() error = %v", err)
 	}
-	features := decodeKernelFeatures(t, fcCfg.KernelArgs)
+	features := decodeKernelFeatures(t, hvCfg.KernelArgs)
 	if len(features) != 1 || features[0].Name != "docker" {
 		t.Fatalf("decoded features = %#v", features)
 	}
@@ -106,7 +106,7 @@ func TestBuildConfigEncodesFeaturesInKernelArgs(t *testing.T) {
 	}
 }
 
-func TestBuildConfigIncludesGuestNetworkInterface(t *testing.T) {
+func TestBuildHypervisorConfigIncludesGuestNetworkInterface(t *testing.T) {
 	cfg := config.Default()
 
 	machine := NewMachine(cfg, RuntimeAssets{
@@ -128,27 +128,24 @@ func TestBuildConfigIncludesGuestNetworkInterface(t *testing.T) {
 		},
 	})
 
-	fcCfg, err := machine.BuildConfig()
+	hvCfg, err := machine.BuildHypervisorConfig()
 	if err != nil {
-		t.Fatalf("BuildConfig() error = %v", err)
+		t.Fatalf("BuildHypervisorConfig() error = %v", err)
 	}
-	if len(fcCfg.NetworkInterfaces) != 1 {
-		t.Fatalf("len(NetworkInterfaces) = %d, want 1", len(fcCfg.NetworkInterfaces))
+	if len(hvCfg.NetworkInterfaces) != 1 {
+		t.Fatalf("len(NetworkInterfaces) = %d, want 1", len(hvCfg.NetworkInterfaces))
 	}
-	staticCfg := fcCfg.NetworkInterfaces[0].StaticConfiguration
-	if staticCfg == nil {
-		t.Fatal("StaticConfiguration = nil, want non-nil")
-	}
+	staticCfg := hvCfg.NetworkInterfaces[0]
 	if got, want := staticCfg.HostDevName, "keeltap0"; got != want {
 		t.Fatalf("HostDevName = %q, want %q", got, want)
 	}
-	if got, want := staticCfg.MacAddress, "02:fc:00:00:00:01"; got != want {
+	if got, want := staticCfg.MACAddress, "02:fc:00:00:00:01"; got != want {
 		t.Fatalf("MacAddress = %q, want %q", got, want)
 	}
 	if staticCfg.IPConfiguration == nil {
 		t.Fatal("IPConfiguration = nil, want non-nil")
 	}
-	if got, want := staticCfg.IPConfiguration.IPAddr.String(), "172.22.0.2/30"; got != want {
+	if got, want := staticCfg.IPConfiguration.Address.String(), "172.22.0.2/30"; got != want {
 		t.Fatalf("IPAddr = %q, want %q", got, want)
 	}
 	if got, want := staticCfg.IPConfiguration.Gateway.String(), "172.22.0.1"; got != want {
@@ -156,38 +153,35 @@ func TestBuildConfigIncludesGuestNetworkInterface(t *testing.T) {
 	}
 }
 
-func TestRunStartsAndWaitsForFirecracker(t *testing.T) {
+func TestPrepareCreatesHypervisorVM(t *testing.T) {
 	assets := createRuntimeAssets(t)
 	cfg := config.Default()
 
-	var started bool
-	var waited bool
+	var prepared bool
+	var captured hypervisor.Config
 	machine := NewMachine(cfg, assets)
 	machine.PrepareNetwork = func(context.Context) (*GuestNetwork, func(), error) {
 		return nil, func() {}, nil
 	}
-	machine.AttachPTY = func(context.Context, string) error { return nil }
-	machine.NewFirecracker = func(_ context.Context, cfg firecracker.Config) (firecrackerMachine, error) {
-		if got, want := cfg.SocketPath, assets.SocketPath; got != want {
-			t.Fatalf("SocketPath = %q, want %q", got, want)
-		}
-		return stubFirecrackerMachine{
-			start: func(context.Context) error {
-				started = true
-				return nil
-			},
-			wait: func(context.Context) error {
-				waited = true
-				return nil
-			},
-		}, nil
+	machine.NewVM = func(cfg hypervisor.Config) (hypervisor.VM, error) {
+		prepared = true
+		captured = cfg
+		return stubVM{}, nil
 	}
 
-	if err := machine.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error = %v", err)
+	instance, cleanup, err := machine.Prepare(context.Background())
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
 	}
-	if !started || !waited {
-		t.Fatalf("started=%v waited=%v, want both true", started, waited)
+	defer cleanup()
+	if instance == nil {
+		t.Fatal("Prepare() returned nil VM")
+	}
+	if !prepared {
+		t.Fatal("expected Prepare() to build a hypervisor VM")
+	}
+	if got, want := captured.SocketPath, assets.SocketPath; got != want {
+		t.Fatalf("SocketPath = %q, want %q", got, want)
 	}
 }
 
@@ -204,14 +198,14 @@ func TestRunRemovesStaleRuntimeSockets(t *testing.T) {
 	machine.PrepareNetwork = func(context.Context) (*GuestNetwork, func(), error) {
 		return nil, func() {}, nil
 	}
-	machine.AttachPTY = func(context.Context, string) error { return nil }
-	machine.NewFirecracker = func(_ context.Context, _ firecracker.Config) (firecrackerMachine, error) {
+	machine.AttachPTY = func(context.Context, hypervisor.VM) error { return nil }
+	machine.NewVM = func(cfg hypervisor.Config) (hypervisor.VM, error) {
 		for _, path := range []string{assets.SocketPath, assets.VSockPath, assets.LogPath} {
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				t.Fatalf("expected %q to be removed before launch, stat err=%v", path, err)
 			}
 		}
-		return stubFirecrackerMachine{}, nil
+		return stubVM{}, nil
 	}
 
 	if err := machine.Run(context.Background()); err != nil {
@@ -239,23 +233,37 @@ func createRuntimeAssets(t *testing.T) RuntimeAssets {
 	return assets
 }
 
-type stubFirecrackerMachine struct {
+type stubVM struct {
 	start func(context.Context) error
 	wait  func(context.Context) error
 }
 
-func (m stubFirecrackerMachine) Start(ctx context.Context) error {
+func (m stubVM) Start(ctx context.Context) error {
 	if m.start != nil {
 		return m.start(ctx)
 	}
 	return nil
 }
 
-func (m stubFirecrackerMachine) Wait(ctx context.Context) error {
+func (m stubVM) Stop(context.Context) error {
+	return nil
+}
+
+func (m stubVM) Wait(ctx context.Context) error {
 	if m.wait != nil {
 		return m.wait(ctx)
 	}
 	return nil
+}
+
+func (stubVM) VSockListen(uint32) (net.Listener, error) {
+	return nil, nil
+}
+
+func (stubVM) VSockConnect(uint32) (net.Conn, error) {
+	server, client := net.Pipe()
+	go server.Close()
+	return client, nil
 }
 
 func decodeKernelCommand(t *testing.T, kernelArgs string) []string {

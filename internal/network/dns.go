@@ -87,6 +87,10 @@ func (p DNSProxy) Serve(ctx context.Context, vsockPath string) error {
 	if err != nil {
 		return err
 	}
+	return p.ServeListener(ctx, listener)
+}
+
+func (p DNSProxy) ServeListener(ctx context.Context, listener net.Listener) error {
 	defer listener.Close()
 
 	go func() {

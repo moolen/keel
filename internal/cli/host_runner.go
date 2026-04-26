@@ -10,6 +10,7 @@ import (
 
 	"github.com/moolen/keel/internal/config"
 	keelfeatures "github.com/moolen/keel/internal/features"
+	"github.com/moolen/keel/internal/hypervisor"
 	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/network"
 	"github.com/moolen/keel/internal/vm"
@@ -61,24 +62,33 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	}
 	defer r.cleanupRuntimeAssets(assets)
 	r.warnKernelNetworkLimitations(req, assets)
-	startServices := r.ServiceStarter
-	if startServices == nil {
-		startServices = r.startServices
-	}
-	stopServices, summary, err := startServices(ctx, req.Config, assets)
-	if err != nil {
-		return err
-	}
-	defer stopServices()
-	defer r.printNetworkSummary(req, summary)
 	factory := r.MachineFactory
-	if factory == nil {
-		factory = func(cfg config.Config, assets vm.RuntimeAssets) machineRunner {
-			return vm.NewMachine(cfg, assets)
+	if factory != nil {
+		startServices := r.ServiceStarter
+		if startServices == nil {
+			startServices = r.startServices
+		}
+		stopServices, summary, err := startServices(ctx, req.Config, assets)
+		if err != nil {
+			return err
+		}
+		defer stopServices()
+		defer r.printNetworkSummary(req, summary)
+		machine := factory(req.Config, assets)
+		runErr := machine.Run(ctx)
+		syncErr := r.syncWorkspace(req, assets)
+		switch {
+		case runErr != nil && syncErr != nil:
+			return fmt.Errorf("%w (workspace sync: %v)", runErr, syncErr)
+		case runErr != nil:
+			return runErr
+		default:
+			return syncErr
 		}
 	}
-	machine := factory(req.Config, assets)
-	runErr := machine.Run(ctx)
+
+	machine := vm.NewMachine(req.Config, assets)
+	runErr := r.runPreparedVM(ctx, req, machine)
 	syncErr := r.syncWorkspace(req, assets)
 	switch {
 	case runErr != nil && syncErr != nil:
@@ -88,6 +98,32 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	default:
 		return syncErr
 	}
+}
+
+func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *vm.Machine) error {
+	instance, cleanup, err := machine.Prepare(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	stopServices, summary, err := r.startVMServices(ctx, req.Config, instance)
+	if err != nil {
+		return err
+	}
+	defer stopServices()
+	defer r.printNetworkSummary(req, summary)
+
+	if err := instance.Start(ctx); err != nil {
+		return err
+	}
+	if err := machine.AttachPTYToVM(ctx, instance); err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = instance.Stop(stopCtx)
+		return err
+	}
+	return instance.Wait(ctx)
 }
 
 func (r HostRunner) warnKernelNetworkLimitations(req RunRequest, assets vm.RuntimeAssets) {
@@ -178,6 +214,65 @@ func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+func (r HostRunner) startVMServices(ctx context.Context, cfg config.Config, instance hypervisor.VM) (func(), *network.Summary, error) {
+	serviceCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan error, 2)
+
+	tracker := network.NewTracker(60 * time.Second)
+	summary := network.NewSummary()
+	engine := network.NewPolicyEngine(network.PolicyConfig{
+		DNS: network.RuleSet{
+			Allowed: cfg.Network.DNS.Allowed,
+			Denied:  cfg.Network.DNS.Denied,
+		},
+		TCP: network.CIDRRuleSet{
+			Allowed: cfg.Network.TCP.AllowedCIDRs,
+			Denied:  cfg.Network.TCP.DeniedCIDRs,
+		},
+		TLS: network.RuleSet{
+			Allowed: cfg.Network.TLS.AllowedSNI,
+			Denied:  cfg.Network.TLS.DeniedSNI,
+		},
+		DenyIfNoSNI: cfg.Network.DenyIfNoSNI,
+	}, tracker)
+	dnsProxy := network.DNSProxy{
+		Policy:  engine,
+		Tracker: tracker,
+		Summary: summary,
+	}
+	tcpProxy := network.TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+	}
+
+	dnsListener, err := instance.VSockListen(3053)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	tcpListener, err := instance.VSockListen(3128)
+	if err != nil {
+		cancel()
+		_ = dnsListener.Close()
+		return nil, nil, err
+	}
+
+	go func() {
+		errCh <- dnsProxy.ServeListener(serviceCtx, dnsListener)
+	}()
+	go func() {
+		errCh <- tcpProxy.ServeListener(serviceCtx, tcpListener)
+	}()
+
+	select {
+	case err := <-errCh:
+		cancel()
+		return nil, nil, err
+	default:
+	}
+	return cancel, summary, nil
 }
 
 func (r HostRunner) printNetworkSummary(req RunRequest, summary *network.Summary) {

@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/moolen/keel/internal/config"
+	"github.com/moolen/keel/internal/hypervisor"
 	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/network"
 	"github.com/moolen/keel/internal/vm"
@@ -599,14 +602,16 @@ func TestHostRunnerReturnsSyncErrorAfterSuccessfulRun(t *testing.T) {
 
 func TestHostRunnerStartServicesStartsDNSAndTCPProxies(t *testing.T) {
 	runner := HostRunner{}
-	assets := vm.RuntimeAssets{
-		VSockPath: filepath.Join(t.TempDir(), "firecracker.vsock"),
+	instance := &stubHypervisorVM{
+		listen: func(port uint32) (net.Listener, error) {
+			return net.Listen("unix", filepath.Join(t.TempDir(), "vsock-"+strconv.Itoa(int(port))))
+		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stop, summary, err := runner.startServices(ctx, config.Default(), assets)
+	stop, summary, err := runner.startVMServices(ctx, config.Default(), instance)
 	if err != nil {
 		t.Fatalf("startServices() error = %v", err)
 	}
@@ -614,18 +619,8 @@ func TestHostRunnerStartServicesStartsDNSAndTCPProxies(t *testing.T) {
 	if summary == nil {
 		t.Fatal("startServices() summary should not be nil")
 	}
-
-	for _, socketPath := range []string{assets.VSockPath + "_3053", assets.VSockPath + "_3128"} {
-		deadline := time.Now().Add(2 * time.Second)
-		for {
-			if _, statErr := os.Stat(socketPath); statErr == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("socket %q was not created in time", socketPath)
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
+	if got, want := instance.listenedPorts, []uint32{3053, 3128}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("listened ports = %#v, want %#v", got, want)
 	}
 }
 
@@ -634,3 +629,27 @@ type stubMachineRunner struct{}
 func (stubMachineRunner) Run(context.Context) error {
 	return nil
 }
+
+type stubHypervisorVM struct {
+	listen        func(uint32) (net.Listener, error)
+	listenedPorts []uint32
+}
+
+func (*stubHypervisorVM) Start(context.Context) error { return nil }
+func (*stubHypervisorVM) Stop(context.Context) error  { return nil }
+func (*stubHypervisorVM) Wait(context.Context) error  { return nil }
+func (*stubHypervisorVM) VSockConnect(uint32) (net.Conn, error) {
+	server, client := net.Pipe()
+	go server.Close()
+	return client, nil
+}
+
+func (v *stubHypervisorVM) VSockListen(port uint32) (net.Listener, error) {
+	v.listenedPorts = append(v.listenedPorts, port)
+	if v.listen != nil {
+		return v.listen(port)
+	}
+	return nil, nil
+}
+
+var _ hypervisor.VM = (*stubHypervisorVM)(nil)

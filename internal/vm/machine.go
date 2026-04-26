@@ -5,18 +5,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"time"
 
-	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
-	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	"github.com/moolen/keel/internal/config"
+	"github.com/moolen/keel/internal/hypervisor"
 	keelpty "github.com/moolen/keel/internal/pty"
-	"github.com/sirupsen/logrus"
 )
 
 type RuntimeAssets struct {
@@ -35,14 +32,9 @@ type RuntimeAssets struct {
 type Machine struct {
 	Config         config.Config
 	Assets         RuntimeAssets
-	NewFirecracker func(context.Context, firecracker.Config) (firecrackerMachine, error)
-	AttachPTY      func(context.Context, string) error
+	NewVM          func(hypervisor.Config) (hypervisor.VM, error)
+	AttachPTY      func(context.Context, hypervisor.VM) error
 	PrepareNetwork func(context.Context) (*GuestNetwork, func(), error)
-}
-
-type firecrackerMachine interface {
-	Start(context.Context) error
-	Wait(context.Context) error
 }
 
 func NewMachine(cfg config.Config, assets RuntimeAssets) *Machine {
@@ -67,45 +59,130 @@ func (m *Machine) Validate() error {
 	return nil
 }
 
-func (m *Machine) BuildConfig() (firecracker.Config, error) {
+func (m *Machine) BuildHypervisorConfig() (hypervisor.Config, error) {
 	if err := m.Validate(); err != nil {
-		return firecracker.Config{}, err
+		return hypervisor.Config{}, err
 	}
 
-	rootDrive := models.Drive{
-		DriveID:      firecracker.String("rootfs"),
-		PathOnHost:   firecracker.String(m.Assets.RootfsPath),
-		IsRootDevice: firecracker.Bool(true),
-		IsReadOnly:   firecracker.Bool(false),
-	}
-	workspaceDrive := models.Drive{
-		DriveID:      firecracker.String("workspace"),
-		PathOnHost:   firecracker.String(m.Assets.WorkspacePath),
-		IsRootDevice: firecracker.Bool(false),
-		IsReadOnly:   firecracker.Bool(false),
-	}
-
-	return firecracker.Config{
-		SocketPath:      m.Assets.SocketPath,
-		LogPath:         m.Assets.LogPath,
-		KernelImagePath: m.Assets.KernelPath,
-		KernelArgs:      m.kernelArgs(),
-		ForwardSignals:  []os.Signal{},
-		Drives:          []models.Drive{rootDrive, workspaceDrive},
-		VsockDevices: []firecracker.VsockDevice{
-			{
-				ID:   "keel-vsock",
-				Path: m.Assets.VSockPath,
-				CID:  m.Assets.CID,
-			},
+	return hypervisor.Config{
+		KernelPath: m.Assets.KernelPath,
+		KernelArgs: m.kernelArgs(),
+		RootDrive: hypervisor.DriveConfig{
+			ID:     "rootfs",
+			Path:   m.Assets.RootfsPath,
+			IsRoot: true,
 		},
-		MachineCfg: models.MachineConfiguration{
-			VcpuCount:  firecracker.Int64(int64(m.Config.Resources.VCPU)),
-			MemSizeMib: firecracker.Int64(int64(m.Config.Resources.MemoryMB)),
-			Smt:        firecracker.Bool(false),
-		},
+		ExtraDrives: []hypervisor.DriveConfig{{
+			ID:   "workspace",
+			Path: m.Assets.WorkspacePath,
+		}},
+		VCPUs:             m.Config.Resources.VCPU,
+		MemoryMB:          m.Config.Resources.MemoryMB,
+		VSockCID:          m.Assets.CID,
+		RuntimeDir:        m.Assets.RuntimeDir,
+		SocketPath:        m.Assets.SocketPath,
+		VSockPath:         m.Assets.VSockPath,
+		LogPath:           m.Assets.LogPath,
+		Verbose:           m.Config.Verbose,
 		NetworkInterfaces: m.networkInterfaces(),
 	}, nil
+}
+
+func (m *Machine) Prepare(ctx context.Context) (hypervisor.VM, func(), error) {
+	if err := m.Validate(); err != nil {
+		return nil, nil, err
+	}
+	if err := ensureKVMAccess(); err != nil {
+		return nil, nil, err
+	}
+
+	cleanupNetwork := func() {}
+	if m.Assets.Network == nil && m.Config.Network.Mode != "none" {
+		prepareNetwork := m.PrepareNetwork
+		if prepareNetwork == nil {
+			prepareNetwork = func(ctx context.Context) (*GuestNetwork, func(), error) {
+				return TapManager{}.Prepare(ctx)
+			}
+		}
+		network, cleanup, err := prepareNetwork(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		m.Assets.Network = network
+		if cleanup != nil {
+			cleanupNetwork = cleanup
+		}
+	}
+
+	for _, asset := range []struct {
+		label string
+		path  string
+	}{
+		{label: "kernel image", path: m.Assets.KernelPath},
+		{label: "rootfs", path: m.Assets.RootfsPath},
+		{label: "workspace", path: m.Assets.WorkspacePath},
+	} {
+		if _, err := os.Stat(asset.path); err != nil {
+			cleanupNetwork()
+			return nil, nil, fmt.Errorf("%s unavailable: %w", asset.label, err)
+		}
+	}
+	if err := prepareRuntimePaths(m.Assets); err != nil {
+		cleanupNetwork()
+		return nil, nil, err
+	}
+
+	hvCfg, err := m.BuildHypervisorConfig()
+	if err != nil {
+		cleanupNetwork()
+		return nil, nil, err
+	}
+	newVM := m.NewVM
+	if newVM == nil {
+		newVM = hypervisor.New
+	}
+	instance, err := newVM(hvCfg)
+	if err != nil {
+		cleanupNetwork()
+		return nil, nil, err
+	}
+	return instance, cleanupNetwork, nil
+}
+
+func (m *Machine) Run(ctx context.Context) error {
+	instance, cleanup, err := m.Prepare(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if err := instance.Start(ctx); err != nil {
+		return err
+	}
+
+	if err := m.AttachPTYToVM(ctx, instance); err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = instance.Stop(stopCtx)
+		return err
+	}
+	return instance.Wait(ctx)
+}
+
+func (m *Machine) AttachPTYToVM(ctx context.Context, instance hypervisor.VM) error {
+	attachPTY := m.AttachPTY
+	if attachPTY == nil {
+		attachPTY = func(ctx context.Context, instance hypervisor.VM) error {
+			client := keelpty.Client{
+				SocketPath: "ignored",
+				Dial: func(_ context.Context, _ string, port uint32) (net.Conn, error) {
+					return instance.VSockConnect(port)
+				},
+			}
+			return client.Run(ctx)
+		}
+	}
+	return attachPTY(ctx, instance)
 }
 
 func (m *Machine) kernelArgs() string {
@@ -154,71 +231,6 @@ func encodeKernelFeatures(features []config.FeatureConfig) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(data), nil
 }
 
-func (m *Machine) Run(ctx context.Context) error {
-	if err := m.Validate(); err != nil {
-		return err
-	}
-	if err := ensureKVMAccess(); err != nil {
-		return err
-	}
-	cleanupNetwork := func() {}
-	if m.Assets.Network == nil && m.Config.Network.Mode != "none" {
-		prepareNetwork := m.PrepareNetwork
-		if prepareNetwork == nil {
-			prepareNetwork = func(ctx context.Context) (*GuestNetwork, func(), error) {
-				return TapManager{}.Prepare(ctx)
-			}
-		}
-		network, cleanup, err := prepareNetwork(ctx)
-		if err != nil {
-			return err
-		}
-		m.Assets.Network = network
-		if cleanup != nil {
-			cleanupNetwork = cleanup
-		}
-	}
-	defer cleanupNetwork()
-	fcCfg, err := m.BuildConfig()
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(fcCfg.KernelImagePath); err != nil {
-		return fmt.Errorf("kernel image unavailable: %w", err)
-	}
-	if _, err := os.Stat(m.Assets.RootfsPath); err != nil {
-		return fmt.Errorf("rootfs unavailable: %w", err)
-	}
-	if _, err := os.Stat(m.Assets.WorkspacePath); err != nil {
-		return fmt.Errorf("workspace unavailable: %w", err)
-	}
-	if err := prepareRuntimePaths(m.Assets); err != nil {
-		return err
-	}
-
-	newFirecracker := m.NewFirecracker
-	if newFirecracker == nil {
-		newFirecracker = m.defaultFirecrackerMachine
-	}
-	instance, err := newFirecracker(ctx, fcCfg)
-	if err != nil {
-		return err
-	}
-	if err := instance.Start(ctx); err != nil {
-		return err
-	}
-	attachPTY := m.AttachPTY
-	if attachPTY == nil {
-		attachPTY = func(ctx context.Context, socketPath string) error {
-			return (keelpty.Client{SocketPath: socketPath}).Run(ctx)
-		}
-	}
-	if err := attachPTY(ctx, m.Assets.VSockPath); err != nil {
-		return err
-	}
-	return instance.Wait(ctx)
-}
-
 func prepareRuntimePaths(assets RuntimeAssets) error {
 	for _, path := range []string{assets.SocketPath, assets.VSockPath, assets.LogPath} {
 		if path == "" {
@@ -234,39 +246,19 @@ func prepareRuntimePaths(assets RuntimeAssets) error {
 	return nil
 }
 
-func (m *Machine) defaultFirecrackerMachine(ctx context.Context, cfg firecracker.Config) (firecrackerMachine, error) {
-	stdout := io.Discard
-	stderr := io.Discard
-	if m.Config.Verbose {
-		stdout = os.Stdout
-		stderr = os.Stderr
-	}
-	cmd := firecracker.VMCommandBuilder{}.
-		WithBin("firecracker").
-		WithSocketPath(cfg.SocketPath).
-		WithStdin(nil).
-		WithStdout(stdout).
-		WithStderr(stderr).
-		Build(ctx)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	return firecracker.NewMachine(ctx, cfg,
-		firecracker.WithProcessRunner(cmd),
-		firecracker.WithLogger(logrus.NewEntry(logrus.New())),
-	)
-}
-
-func (m *Machine) networkInterfaces() []firecracker.NetworkInterface {
+func (m *Machine) networkInterfaces() []hypervisor.NetworkInterfaceConfig {
 	if m.Assets.Network == nil {
 		return nil
 	}
-	return []firecracker.NetworkInterface{{
-		StaticConfiguration: &firecracker.StaticNetworkConfiguration{
-			HostDevName: m.Assets.Network.TapName,
-			MacAddress:  m.Assets.Network.MACAddress,
-			IPConfiguration: &firecracker.IPConfiguration{
-				IPAddr:  net.IPNet{IP: append(net.IP(nil), m.Assets.Network.GuestIP.IP...), Mask: append(net.IPMask(nil), m.Assets.Network.GuestIP.Mask...)},
-				Gateway: append(net.IP(nil), m.Assets.Network.Gateway...),
+	return []hypervisor.NetworkInterfaceConfig{{
+		HostDevName: m.Assets.Network.TapName,
+		MACAddress:  m.Assets.Network.MACAddress,
+		IPConfiguration: &hypervisor.IPConfiguration{
+			Address: net.IPNet{
+				IP:   append(net.IP(nil), m.Assets.Network.GuestIP.IP...),
+				Mask: append(net.IPMask(nil), m.Assets.Network.GuestIP.Mask...),
 			},
+			Gateway: append(net.IP(nil), m.Assets.Network.Gateway...),
 		},
 	}}
 }
