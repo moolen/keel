@@ -18,6 +18,12 @@ import (
 
 var caMu sync.Mutex
 
+const (
+	fileLockPollInterval = 10 * time.Millisecond
+	fileLockTimeout      = 5 * time.Second
+	fileLockStaleAfter   = 30 * time.Second
+)
+
 type CAOptions struct {
 	Dir  string
 	Name string
@@ -43,6 +49,7 @@ func LoadOrCreateCA(opts CAOptions) (*CA, error) {
 
 	certPath := filepath.Join(opts.Dir, "ca.crt")
 	keyPath := filepath.Join(opts.Dir, "ca.key")
+	lockPath := filepath.Join(opts.Dir, "ca.lock")
 
 	caMu.Lock()
 	defer caMu.Unlock()
@@ -53,7 +60,34 @@ func LoadOrCreateCA(opts CAOptions) (*CA, error) {
 		return ca, nil
 	}
 
-	return createCA(certPath, keyPath, opts)
+	var loaded *CA
+	if err := withFileLock(lockPath, func() error {
+		if ca, ok, err := loadCAIfUsable(certPath, keyPath, opts.Dir); err != nil {
+			return err
+		} else if ok {
+			loaded = ca
+			return nil
+		}
+
+		if err := createCA(certPath, keyPath, opts); err != nil {
+			return err
+		}
+
+		ca, ok, err := loadCAIfUsable(certPath, keyPath, opts.Dir)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("load persisted ca")
+		}
+
+		loaded = ca
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return loaded, nil
 }
 
 func (ca *CA) IssueLeaf(host string) (*IssuedCert, error) {
@@ -68,13 +102,41 @@ func (ca *CA) IssueLeaf(host string) (*IssuedCert, error) {
 
 	certPath := filepath.Join(issuedDir, host+".crt")
 	keyPath := filepath.Join(issuedDir, host+".key")
+	lockPath := filepath.Join(issuedDir, host+".lock")
 	if issued, ok, err := loadIssuedCertIfUsable(certPath, keyPath, host, ca.cert); err != nil {
 		return nil, err
 	} else if ok {
 		return issued, nil
 	}
 
-	return ca.createLeaf(certPath, keyPath, host)
+	var loaded *IssuedCert
+	if err := withFileLock(lockPath, func() error {
+		if issued, ok, err := loadIssuedCertIfUsable(certPath, keyPath, host, ca.cert); err != nil {
+			return err
+		} else if ok {
+			loaded = issued
+			return nil
+		}
+
+		if err := ca.createLeaf(certPath, keyPath, host); err != nil {
+			return err
+		}
+
+		issued, ok, err := loadIssuedCertIfUsable(certPath, keyPath, host, ca.cert)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("load persisted leaf certificate")
+		}
+
+		loaded = issued
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return loaded, nil
 }
 
 func (c *IssuedCert) X509() (*x509.Certificate, error) {
@@ -126,15 +188,15 @@ func loadCAIfUsable(certPath, keyPath, dir string) (*CA, bool, error) {
 	}, true, nil
 }
 
-func createCA(certPath, keyPath string, opts CAOptions) (*CA, error) {
+func createCA(certPath, keyPath string, opts CAOptions) error {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	serial, err := randomSerialNumber()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	name := opts.Name
@@ -159,39 +221,24 @@ func createCA(certPath, keyPath string, opts CAOptions) (*CA, error) {
 
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 
-	if err := writePEMPair(certPath, certPEM, keyPath, keyPEM); err != nil {
-		return nil, err
-	}
-
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		return nil, err
-	}
-
-	return &CA{
-		CertPEM: certPEM,
-		KeyPEM:  keyPEM,
-		cert:    cert,
-		key:     key,
-		dir:     opts.Dir,
-	}, nil
+	return writePEMPair(certPath, certPEM, keyPath, keyPEM)
 }
 
-func (ca *CA) createLeaf(certPath, keyPath, host string) (*IssuedCert, error) {
+func (ca *CA) createLeaf(certPath, keyPath, host string) error {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	serial, err := randomSerialNumber()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	now := time.Now().UTC()
@@ -213,20 +260,13 @@ func (ca *CA) createLeaf(certPath, keyPath, host string) (*IssuedCert, error) {
 
 	der, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &key.PublicKey, ca.key)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 
-	if err := writePEMPair(certPath, certPEM, keyPath, keyPEM); err != nil {
-		return nil, err
-	}
-
-	return &IssuedCert{
-		CertPEM: certPEM,
-		KeyPEM:  keyPEM,
-	}, nil
+	return writePEMPair(certPath, certPEM, keyPath, keyPEM)
 }
 
 func loadIssuedCertIfUsable(certPath, keyPath, host string, caCert *x509.Certificate) (*IssuedCert, bool, error) {
@@ -369,4 +409,34 @@ func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
 	}
 
 	return nil
+}
+
+func withFileLock(lockPath string, fn func() error) error {
+	deadline := time.Now().Add(fileLockTimeout)
+	for {
+		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			lockFile.Close()
+			defer os.Remove(lockPath)
+			return fn()
+		}
+		if !os.IsExist(err) {
+			return err
+		}
+
+		info, statErr := os.Stat(lockPath)
+		if statErr == nil && time.Since(info.ModTime()) > fileLockStaleAfter {
+			if err := os.Remove(lockPath); err == nil || os.IsNotExist(err) {
+				continue
+			}
+		}
+		if statErr != nil && os.IsNotExist(statErr) {
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("acquire file lock %s: timeout", lockPath)
+		}
+
+		time.Sleep(fileLockPollInterval)
+	}
 }

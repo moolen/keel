@@ -2,13 +2,16 @@ package network
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestLoadOrCreateCAReusesExistingCertificate(t *testing.T) {
@@ -186,6 +189,86 @@ func TestIssueLeafChainsToCurrentCA(t *testing.T) {
 	assertIssuedChainsToCA(t, ca, leaf)
 }
 
+func TestLoadOrCreateCAReloadsOnDiskWinnerWhenFilesChange(t *testing.T) {
+	dir := t.TempDir()
+
+	first, err := LoadOrCreateCA(CAOptions{Dir: dir, Name: "keel-local-ca"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	otherDir := t.TempDir()
+	winner, err := LoadOrCreateCA(CAOptions{Dir: otherDir, Name: "keel-local-ca"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), winner.CertPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.key"), winner.KeyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := LoadOrCreateCA(CAOptions{Dir: dir, Name: "keel-local-ca"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Equal(first.CertPEM, reloaded.CertPEM) {
+		t.Fatal("expected CA reload to return the on-disk winner")
+	}
+	if !bytes.Equal(winner.CertPEM, reloaded.CertPEM) {
+		t.Fatal("expected CA reload to reuse on-disk winner certificate")
+	}
+	if !bytes.Equal(winner.KeyPEM, reloaded.KeyPEM) {
+		t.Fatal("expected CA reload to reuse on-disk winner key")
+	}
+}
+
+func TestIssueLeafReloadsOnDiskWinnerWhenFilesChange(t *testing.T) {
+	dir := t.TempDir()
+
+	ca, err := LoadOrCreateCA(CAOptions{Dir: dir, Name: "keel-local-ca"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := ca.IssueLeaf("api.github.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	otherLeaf, err := createTestLeafForCA(ca, "api.github.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "issued", "api.github.com.crt"), otherLeaf.CertPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "issued", "api.github.com.key"), otherLeaf.KeyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := ca.IssueLeaf("api.github.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Equal(first.CertPEM, reloaded.CertPEM) {
+		t.Fatal("expected leaf reload to return the on-disk winner")
+	}
+	if !bytes.Equal(otherLeaf.CertPEM, reloaded.CertPEM) {
+		t.Fatal("expected leaf reload to reuse on-disk winner certificate")
+	}
+	if !bytes.Equal(otherLeaf.KeyPEM, reloaded.KeyPEM) {
+		t.Fatal("expected leaf reload to reuse on-disk winner key")
+	}
+
+	assertIssuedChainsToCA(t, ca, reloaded)
+}
+
 func TestLoadOrCreateCAConcurrentCallersReuseSingleCA(t *testing.T) {
 	dir := t.TempDir()
 
@@ -288,4 +371,38 @@ func assertCertificateMatchesKey(t *testing.T, certPEM, keyPEM []byte) {
 	if certKey.N.Cmp(key.N) != 0 || certKey.E != key.E {
 		t.Fatal("certificate public key does not match private key")
 	}
+}
+
+func createTestLeafForCA(ca *CA, host string) (*IssuedCert, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+
+	serial, err := randomSerialNumber()
+	if err != nil {
+		return nil, err
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName: host,
+		},
+		NotBefore:   time.Now().UTC().Add(-time.Hour),
+		NotAfter:    time.Now().UTC().AddDate(1, 0, 0),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:    []string{host},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &key.PublicKey, ca.key)
+	if err != nil {
+		return nil, err
+	}
+
+	return &IssuedCert{
+		CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		KeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}),
+	}, nil
 }
