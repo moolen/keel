@@ -1,11 +1,13 @@
 package network
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -197,6 +199,56 @@ func TestTCPProxyDeniesMismatchedTLSSNI(t *testing.T) {
 		t.Fatal("dialer was called for mismatched TLS SNI")
 	}
 	assertSummaryReportContains(t, summary, "tcp  evil.github.com:443 policy=denied count=1")
+}
+
+func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
+	engine := NewPolicyEngine(PolicyConfig{
+		Audit: true,
+	}, NewTracker(60*time.Second))
+	summary := NewSummary()
+	var events bytes.Buffer
+
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		Events:  NewEventLogger(&events),
+		Now: func() time.Time {
+			return time.Unix(110, 0)
+		},
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, fmt.Errorf("dial failed")
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- proxy.handleConn(context.Background(), proxySide)
+	}()
+
+	if err := writeDestinationHeader(clientSide, "198.51.100.25:80"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	_ = clientSide.Close()
+
+	select {
+	case err := <-errCh:
+		if err == nil || err.Error() != "dial failed" {
+			t.Fatalf("handleConn() error = %v, want dial failed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+
+	got := events.String()
+	if !strings.HasPrefix(got, "\n[keel:tcp] ") {
+		t.Fatalf("events = %q, want newline-prefixed keel tcp log", got)
+	}
+	if !strings.Contains(got, "would_deny destination=198.51.100.25:80 sni= rule=default reason=tcp destination not correlated") {
+		t.Fatalf("events = %q, want would_deny audit log", got)
+	}
 }
 
 func mustClientHelloBytesForTCP(t *testing.T, serverName string) []byte {

@@ -101,6 +101,45 @@ func TestDNSProxyDeniesBlockedDomain(t *testing.T) {
 	assertSummaryReportContains(t, summary, "dns  gist.github.com:53 policy=denied count=1")
 }
 
+func TestDNSProxyLogsWouldDenyInAuditMode(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	summary := NewSummary()
+	engine := NewPolicyEngine(PolicyConfig{
+		Audit: true,
+		DNS: RuleSet{
+			Denied: []string{"gist.github.com"},
+		},
+	}, tracker)
+	resolver := &stubResolver{
+		response: mustDNSResponse(t, "gist.github.com.", "140.82.112.7", 30),
+	}
+	var events bytes.Buffer
+	proxy := DNSProxy{
+		Policy:   engine,
+		Tracker:  tracker,
+		Resolver: resolver,
+		Summary:  summary,
+		Events:   NewEventLogger(&events),
+		Now:      func() time.Time { return time.Unix(100, 0) },
+	}
+
+	reply, err := proxy.HandleQuery(context.Background(), mustDNSQuery(t, "gist.github.com."))
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v", err)
+	}
+	if reply.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want success", reply.Rcode)
+	}
+
+	got := events.String()
+	if !strings.HasPrefix(got, "\n[keel:dns] ") {
+		t.Fatalf("events = %q, want newline-prefixed keel dns log", got)
+	}
+	if !strings.Contains(got, "would_deny domain=gist.github.com answers=1 rule=gist.github.com reason=dns denied") {
+		t.Fatalf("events = %q, want would_deny audit log", got)
+	}
+}
+
 func mustDNSQuery(t *testing.T, name string) *dns.Msg {
 	t.Helper()
 	msg := new(dns.Msg)

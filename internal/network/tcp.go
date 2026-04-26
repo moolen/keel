@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +21,7 @@ type TCPProxy struct {
 	DialContext func(context.Context, string, string) (net.Conn, error)
 	MITM        *MITMProxy
 	Summary     *Summary
+	Events      *EventLogger
 	Now         func() time.Time
 }
 
@@ -60,7 +60,7 @@ func (p TCPProxy) ServeListener(ctx context.Context, listener net.Listener) erro
 		}
 		go func() {
 			if err := p.handleConn(ctx, conn); err != nil && ctx.Err() == nil {
-				log.Printf("tcp proxy connection error: %v", err)
+				p.Events.Printf("tcp", "proxy_error err=%v", err)
 			}
 		}()
 	}
@@ -100,10 +100,10 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	}
 	p.Summary.RecordTCP(summaryHost(p.Policy, ip, sni, now), port, decision)
 	if !decision.Allowed {
-		log.Printf("tcp denied destination=%s sni=%s rule=%s reason=%s", destination, sni, decision.Rule, decision.Reason)
+		p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
 		return nil
 	}
-	log.Printf("tcp allowed destination=%s sni=%s rule=%s reason=%s", destination, sni, decision.Rule, decision.Reason)
+	p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
 
 	if p.MITM != nil && port == 80 && p.MITM.Enabled {
 		httpPreface, host, isHTTP, err := readHTTPPreface(conn)

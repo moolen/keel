@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -23,6 +22,7 @@ type DNSProxy struct {
 	Tracker  *Tracker
 	Resolver DNSResolver
 	Summary  *Summary
+	Events   *EventLogger
 	Now      func() time.Time
 }
 
@@ -35,7 +35,7 @@ func (p DNSProxy) HandleQuery(ctx context.Context, query *dns.Msg) (*dns.Msg, er
 	decision := p.Policy.EvaluateDNS(query.Question[0].Name)
 	p.Summary.RecordDNS(domain, decision)
 	if !decision.Allowed {
-		log.Printf("dns denied domain=%s rule=%s reason=%s", query.Question[0].Name, decision.Rule, decision.Reason)
+		p.Events.Printf("dns", "%s domain=%s rule=%s reason=%s", decisionLabel(decision), domain, decision.Rule, decision.Reason)
 		reply := new(dns.Msg)
 		reply.SetReply(query)
 		reply.Rcode = dns.RcodeRefused
@@ -48,10 +48,10 @@ func (p DNSProxy) HandleQuery(ctx context.Context, query *dns.Msg) (*dns.Msg, er
 	}
 	reply, err := resolver.Exchange(ctx, query)
 	if err != nil {
-		log.Printf("dns upstream error domain=%s err=%v", query.Question[0].Name, err)
+		p.Events.Printf("dns", "upstream_error domain=%s err=%v", domain, err)
 		return nil, err
 	}
-	log.Printf("dns allowed domain=%s answers=%d", query.Question[0].Name, len(reply.Answer))
+	p.Events.Printf("dns", "%s domain=%s answers=%d rule=%s reason=%s", decisionLabel(decision), domain, len(reply.Answer), decision.Rule, decision.Reason)
 
 	now := time.Now()
 	if p.Now != nil {

@@ -532,6 +532,7 @@ func runtimeFeatureConfig(cfg config.Config) ([]config.FeatureConfig, error) {
 func buildNetworkServices(cfg config.Config) (network.DNSProxy, network.TCPProxy, *network.Summary, error) {
 	tracker := network.NewTracker(60 * time.Second)
 	summary := network.NewSummary()
+	events := network.NewEventLogger(os.Stderr)
 	httpPolicy := network.HTTPPolicyConfig{
 		Default: cfg.Network.HTTP.Default,
 		Rules:   httpRulesFromConfig(cfg.Network.HTTP.Rules),
@@ -558,10 +559,12 @@ func buildNetworkServices(cfg config.Config) (network.DNSProxy, network.TCPProxy
 		Policy:  engine,
 		Tracker: tracker,
 		Summary: summary,
+		Events:  events,
 	}
 	tcpProxy := network.TCPProxy{
 		Policy:  engine,
 		Summary: summary,
+		Events:  events,
 	}
 	if cfg.Network.MITM.Enabled {
 		ca, err := loadMITMCA(cfg)
