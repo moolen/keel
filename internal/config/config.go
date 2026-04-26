@@ -9,6 +9,7 @@ type Config struct {
 	Resources        ResourceConfig    `yaml:"resources"`
 	Workspace        WorkspaceConfig   `yaml:"workspace"`
 	Network          NetworkConfig     `yaml:"network"`
+	Process          *ProcessConfig    `yaml:"process"`
 	Features         []FeatureConfig   `yaml:"features"`
 	Env              map[string]string `yaml:"env"`
 	Command          []string          `yaml:"-"`
@@ -91,6 +92,16 @@ type HTTPRuleConfig struct {
 	Host    string   `yaml:"host"`
 	Methods []string `yaml:"methods"`
 	Paths   []string `yaml:"paths"`
+}
+
+type ProcessConfig struct {
+	UID               int   `yaml:"uid" json:"uid"`
+	GID               int   `yaml:"gid" json:"gid"`
+	SupplementaryGIDs []int `yaml:"supplementary_gids" json:"supplementary_gids,omitempty"`
+
+	hasUID               bool `yaml:"-" json:"-"`
+	hasGID               bool `yaml:"-" json:"-"`
+	hasSupplementaryGIDs bool `yaml:"-" json:"-"`
 }
 
 type FeatureConfig struct {

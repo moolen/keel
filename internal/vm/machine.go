@@ -207,6 +207,12 @@ func (m *Machine) kernelArgs() string {
 			args = append(args, "keel.features="+encoded)
 		}
 	}
+	if m.Config.Process != nil {
+		encoded, err := encodeKernelProcess(*m.Config.Process)
+		if err == nil && encoded != "" {
+			args = append(args, "keel.process="+encoded)
+		}
+	}
 	target := m.Config.Workspace.Target
 	if target == "" {
 		target = "/workspace"
@@ -225,6 +231,14 @@ func encodeKernelCommand(command []string) (string, error) {
 
 func encodeKernelFeatures(features []config.FeatureConfig) (string, error) {
 	data, err := json.Marshal(features)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func encodeKernelProcess(process config.ProcessConfig) (string, error) {
+	data, err := json.Marshal(process)
 	if err != nil {
 		return "", err
 	}

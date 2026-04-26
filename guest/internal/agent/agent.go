@@ -18,7 +18,10 @@ type bootConfig struct {
 	Command  []string
 	WorkDir  string
 	Features []guestfeatures.ConfiguredFeature
+	Process  *processConfig
 }
+
+type processConfig = guestinternal.ProcessConfig
 
 type initOps struct {
 	chdir      func(string) error
@@ -99,6 +102,16 @@ func parseKernelCommandLine(cmdline string) (bootConfig, error) {
 				return bootConfig{}, err
 			}
 			if err := json.Unmarshal(data, &cfg.Features); err != nil {
+				return bootConfig{}, err
+			}
+		case strings.HasPrefix(field, "keel.process="):
+			encoded := strings.TrimPrefix(field, "keel.process=")
+			data, err := base64.RawURLEncoding.DecodeString(encoded)
+			if err != nil {
+				return bootConfig{}, err
+			}
+			cfg.Process = &processConfig{}
+			if err := json.Unmarshal(data, cfg.Process); err != nil {
 				return bootConfig{}, err
 			}
 		}
@@ -214,7 +227,7 @@ func runInit(cfg bootConfig, ops initOps) error {
 }
 
 func runCommand(cfg bootConfig, env []string) error {
-	return guestinternal.Bootstrap(cfg.Command, env, cfg.Features)
+	return guestinternal.Bootstrap(cfg.Command, env, cfg.Features, cfg.Process)
 }
 
 func powerOff() error {

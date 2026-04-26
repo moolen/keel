@@ -24,7 +24,13 @@ const (
 	portPTY            = 1000
 )
 
-func ServePTY(command []string, cwd string, env []string) error {
+type ProcessConfig struct {
+	UID               int   `json:"uid"`
+	GID               int   `json:"gid"`
+	SupplementaryGIDs []int `json:"supplementary_gids,omitempty"`
+}
+
+func ServePTY(command []string, cwd string, env []string, process *ProcessConfig) error {
 	listener, err := vsock.Listen(portPTY, nil)
 	if err != nil {
 		return err
@@ -48,6 +54,7 @@ func ServePTY(command []string, cwd string, env []string) error {
 	cmd := exec.Command(commandPath, command[1:]...)
 	cmd.Dir = cwd
 	cmd.Env = env
+	configureCommandCredential(cmd, process)
 
 	ptyFile, err := pty.Start(cmd)
 	if err != nil {
@@ -93,6 +100,31 @@ func ServePTY(command []string, cwd string, env []string) error {
 		return err
 	}
 	return waitErr
+}
+
+func configureCommandCredential(cmd *exec.Cmd, process *ProcessConfig) {
+	if process == nil {
+		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Credential = &syscall.Credential{
+		Uid:    uint32(process.UID),
+		Gid:    uint32(process.GID),
+		Groups: supplementaryGroups(process.SupplementaryGIDs),
+	}
+}
+
+func supplementaryGroups(groups []int) []uint32 {
+	if len(groups) == 0 {
+		return nil
+	}
+	out := make([]uint32, 0, len(groups))
+	for _, gid := range groups {
+		out = append(out, uint32(gid))
+	}
+	return out
 }
 
 func handleControlFrames(conn net.Conn, ptyFile *os.File, process *os.Process) error {

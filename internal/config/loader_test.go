@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -370,6 +371,119 @@ func TestLoadProjectCanDisableInheritedNetworkAudit(t *testing.T) {
 	}
 }
 
+func TestLoadLeavesProcessConfigOmittedByDefault(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte("workspace:\n  target: /workspace\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Process != nil {
+		t.Fatalf("cfg.Process = %#v, want nil", cfg.Process)
+	}
+}
+
+func TestLoadParsesProcessConfig(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte(`
+process:
+  uid: 1000
+  gid: 1001
+  supplementary_gids: [27, 44]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Process == nil {
+		t.Fatal("cfg.Process = nil, want non-nil")
+	}
+	if got, want := cfg.Process.UID, 1000; got != want {
+		t.Fatalf("cfg.Process.UID = %d, want %d", got, want)
+	}
+	if got, want := cfg.Process.GID, 1001; got != want {
+		t.Fatalf("cfg.Process.GID = %d, want %d", got, want)
+	}
+	if got, want := cfg.Process.SupplementaryGIDs, []int{27, 44}; !equalIntSlice(got, want) {
+		t.Fatalf("cfg.Process.SupplementaryGIDs = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidProcessConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "missing gid",
+			yaml: "process:\n  uid: 1000\n",
+			want: "gid",
+		},
+		{
+			name: "missing uid",
+			yaml: "process:\n  gid: 1000\n",
+			want: "uid",
+		},
+		{
+			name: "supplementary gids without uid gid",
+			yaml: "process:\n  supplementary_gids: [27]\n",
+			want: "supplementary_gids",
+		},
+		{
+			name: "negative uid",
+			yaml: "process:\n  uid: -1\n  gid: 1000\n",
+			want: "uid",
+		},
+		{
+			name: "negative supplementary gid",
+			yaml: "process:\n  uid: 1000\n  gid: 1000\n  supplementary_gids: [-1]\n",
+			want: "supplementary_gids",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			projectDir := t.TempDir()
+			t.Setenv("HOME", tmpHome)
+
+			if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := Load(LoadOptions{WorkingDir: projectDir})
+			if err == nil {
+				t.Fatal("Load() error = nil, want non-nil")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestApplyOverrides(t *testing.T) {
 	cfg := Default()
 	cfg.Image = "ubuntu:24.04"
@@ -406,4 +520,16 @@ func writeFile(t *testing.T, path, data string) {
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatalf("WriteFile(%q) error = %v", path, err)
 	}
+}
+
+func equalIntSlice(got, want []int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

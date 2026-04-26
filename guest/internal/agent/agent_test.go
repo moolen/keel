@@ -125,3 +125,50 @@ func TestCoreMountsIncludesCgroup2(t *testing.T) {
 	}
 	t.Fatalf("coreMounts() = %#v, want cgroup2 mount", mounts)
 }
+
+func TestParseKernelCommandLineParsesProcessConfig(t *testing.T) {
+	cmdline := "console=ttyS0 keel.process=eyJ1aWQiOjEwMDAsImdpZCI6MTAwMSwic3VwcGxlbWVudGFyeV9naWRzIjpbMjcsNDRdfQ"
+
+	cfg, err := parseKernelCommandLine(cmdline)
+	if err != nil {
+		t.Fatalf("parseKernelCommandLine() error = %v", err)
+	}
+	if cfg.Process == nil {
+		t.Fatal("Process = nil, want non-nil")
+	}
+	want := &processConfig{
+		UID:               1000,
+		GID:               1001,
+		SupplementaryGIDs: []int{27, 44},
+	}
+	if !reflect.DeepEqual(cfg.Process, want) {
+		t.Fatalf("Process = %#v, want %#v", cfg.Process, want)
+	}
+}
+
+func TestRunInitPassesProcessConfigToRunCommand(t *testing.T) {
+	wantProcess := &processConfig{
+		UID:               1000,
+		GID:               1001,
+		SupplementaryGIDs: []int{27},
+	}
+	var gotProcess *processConfig
+
+	err := runInit(bootConfig{
+		Command: []string{"/bin/true"},
+		Process: wantProcess,
+	}, initOps{
+		chdir: func(string) error { return nil },
+		runCommand: func(cfg bootConfig, _ []string) error {
+			gotProcess = cfg.Process
+			return nil
+		},
+		powerOff: func() error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("runInit() error = %v", err)
+	}
+	if !reflect.DeepEqual(gotProcess, wantProcess) {
+		t.Fatalf("Process = %#v, want %#v", gotProcess, wantProcess)
+	}
+}

@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func Bootstrap(command []string, env []string, configured []guestfeatures.ConfiguredFeature) error {
+func Bootstrap(command []string, env []string, configured []guestfeatures.ConfiguredFeature, process *ProcessConfig) error {
 	if len(command) == 0 {
 		command = []string{"/bin/sh"}
 	}
@@ -40,7 +40,7 @@ func Bootstrap(command []string, env []string, configured []guestfeatures.Config
 	if err := (guestfeatures.Runner{}).RunConfigured(ctx, configured, proxyEnv); err != nil {
 		return err
 	}
-	return ServePTY(command, cwd, proxyEnv)
+	return ServePTY(command, cwd, proxyEnv, process)
 }
 
 func ensureResolverHostname() error {

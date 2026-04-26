@@ -106,6 +106,40 @@ func TestBuildHypervisorConfigEncodesFeaturesInKernelArgs(t *testing.T) {
 	}
 }
 
+func TestBuildHypervisorConfigEncodesProcessInKernelArgs(t *testing.T) {
+	cfg := config.Default()
+	cfg.Process = &config.ProcessConfig{
+		UID:               1000,
+		GID:               1001,
+		SupplementaryGIDs: []int{27, 44},
+	}
+
+	machine := NewMachine(cfg, RuntimeAssets{
+		KernelPath:    "/tmp/vmlinux",
+		RootfsPath:    "/tmp/rootfs.ext4",
+		WorkspacePath: "/tmp/workspace.ext4",
+		SocketPath:    "/tmp/firecracker.sock",
+		VSockPath:     "/tmp/firecracker.vsock",
+		LogPath:       "/tmp/firecracker.log",
+		CID:           52,
+	})
+
+	hvCfg, err := machine.BuildHypervisorConfig()
+	if err != nil {
+		t.Fatalf("BuildHypervisorConfig() error = %v", err)
+	}
+	process := decodeKernelProcess(t, hvCfg.KernelArgs)
+	if got, want := process.UID, 1000; got != want {
+		t.Fatalf("decoded UID = %d, want %d", got, want)
+	}
+	if got, want := process.GID, 1001; got != want {
+		t.Fatalf("decoded GID = %d, want %d", got, want)
+	}
+	if got, want := process.SupplementaryGIDs, []int{27, 44}; !equalIntSlice(got, want) {
+		t.Fatalf("decoded supplementary gids = %#v, want %#v", got, want)
+	}
+}
+
 func TestBuildHypervisorConfigIncludesGuestNetworkInterface(t *testing.T) {
 	cfg := config.Default()
 
@@ -306,4 +340,37 @@ func decodeKernelFeatures(t *testing.T, kernelArgs string) []config.FeatureConfi
 	}
 	t.Fatalf("keel.features not found in %q", kernelArgs)
 	return nil
+}
+
+func decodeKernelProcess(t *testing.T, kernelArgs string) config.ProcessConfig {
+	t.Helper()
+	for _, field := range strings.Fields(kernelArgs) {
+		if !strings.HasPrefix(field, "keel.process=") {
+			continue
+		}
+		encoded := strings.TrimPrefix(field, "keel.process=")
+		data, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatalf("DecodeString() error = %v", err)
+		}
+		var process config.ProcessConfig
+		if err := json.Unmarshal(data, &process); err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		return process
+	}
+	t.Fatalf("keel.process not found in %q", kernelArgs)
+	return config.ProcessConfig{}
+}
+
+func equalIntSlice(got, want []int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

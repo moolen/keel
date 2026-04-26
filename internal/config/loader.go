@@ -21,7 +21,8 @@ type OverrideConfig struct {
 }
 
 type mergePresenceConfig struct {
-	Network mergePresenceNetworkConfig `yaml:"network"`
+	Network mergePresenceNetworkConfig  `yaml:"network"`
+	Process *mergePresenceProcessConfig `yaml:"process"`
 }
 
 type mergePresenceNetworkConfig struct {
@@ -55,6 +56,12 @@ type mergePresenceHTTPConfig struct {
 	Rules   *[]HTTPRuleConfig `yaml:"rules"`
 }
 
+type mergePresenceProcessConfig struct {
+	UID               *int   `yaml:"uid"`
+	GID               *int   `yaml:"gid"`
+	SupplementaryGIDs *[]int `yaml:"supplementary_gids"`
+}
+
 func Load(opts LoadOptions) (Config, error) {
 	cfg := Default()
 
@@ -84,6 +91,9 @@ func Load(opts LoadOptions) (Config, error) {
 		if err := mergeConfigFile(&cfg, projectConfig); err != nil {
 			return Config{}, err
 		}
+	}
+	if err := validateConfig(cfg); err != nil {
+		return Config{}, err
 	}
 
 	cfg.ImageCacheDir = expandHome(cfg.ImageCacheDir)
@@ -253,6 +263,23 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 			dst.Env[k] = v
 		}
 	}
+	if presence.Process != nil {
+		if dst.Process == nil {
+			dst.Process = &ProcessConfig{}
+		}
+		if presence.Process.UID != nil {
+			dst.Process.UID = src.Process.UID
+			dst.Process.hasUID = true
+		}
+		if presence.Process.GID != nil {
+			dst.Process.GID = src.Process.GID
+			dst.Process.hasGID = true
+		}
+		if presence.Process.SupplementaryGIDs != nil {
+			dst.Process.SupplementaryGIDs = append([]int(nil), src.Process.SupplementaryGIDs...)
+			dst.Process.hasSupplementaryGIDs = true
+		}
+	}
 }
 
 func findProjectConfig(start string) (string, error) {
@@ -284,4 +311,29 @@ func expandHome(path string) string {
 		return home
 	}
 	return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+}
+
+func validateConfig(cfg Config) error {
+	if cfg.Process == nil {
+		return nil
+	}
+	process := cfg.Process
+	switch {
+	case process.hasUID != process.hasGID:
+		return errors.New("process.uid and process.gid must both be set")
+	case process.hasSupplementaryGIDs && (!process.hasUID || !process.hasGID):
+		return errors.New("process.supplementary_gids requires process.uid and process.gid")
+	case !process.hasUID && !process.hasGID && !process.hasSupplementaryGIDs:
+		return errors.New("process.uid and process.gid must both be set")
+	case process.hasUID && process.UID < 0:
+		return errors.New("process.uid must be non-negative")
+	case process.hasGID && process.GID < 0:
+		return errors.New("process.gid must be non-negative")
+	}
+	for _, gid := range process.SupplementaryGIDs {
+		if gid < 0 {
+			return errors.New("process.supplementary_gids must be non-negative")
+		}
+	}
+	return nil
 }
