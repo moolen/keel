@@ -50,6 +50,11 @@ func InjectGuestAgent(rootfsPath string, assets GuestAgentAssets) error {
 			return err
 		}
 	}
+	for _, target := range []string{"/usr/local/bin/keel-agent", "/etc/keel/init.sh"} {
+		if err := debugfsRemove(rootfsPath, target); err != nil {
+			return err
+		}
+	}
 	if err := debugfsWrite(rootfsPath, fmt.Sprintf("write %s /usr/local/bin/keel-agent", binaryPath)); err != nil {
 		return err
 	}
@@ -69,7 +74,13 @@ func EnsureGuestAgent(rootfsPath, digestPath string, assets GuestAgentAssets) (b
 	currentDigest := assets.Digest()
 	data, err := os.ReadFile(digestPath)
 	if err == nil && strings.TrimSpace(string(data)) == currentDigest {
-		return false, nil
+		matches, matchErr := rootfsGuestAgentMatches(rootfsPath, currentDigest)
+		if matchErr != nil {
+			return false, matchErr
+		}
+		if matches {
+			return false, nil
+		}
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return false, err
@@ -93,6 +104,50 @@ func debugfsWrite(rootfsPath, command string) error {
 		return fmt.Errorf("debugfs %q: %w: %s", command, err, output)
 	}
 	return nil
+}
+
+func debugfsRemove(rootfsPath, target string) error {
+	cmd := exec.Command("debugfs", "-w", "-R", "rm "+target, rootfsPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("debugfs remove %q: %w: %s", target, err, output)
+	}
+	if strings.Contains(string(output), "File not found") {
+		return nil
+	}
+	return nil
+}
+
+func rootfsGuestAgentMatches(rootfsPath, wantDigest string) (bool, error) {
+	data, err := debugfsReadFile(rootfsPath, "/usr/local/bin/keel-agent")
+	if err != nil {
+		if strings.Contains(err.Error(), "File not found") {
+			return false, nil
+		}
+		return false, err
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:]) == wantDigest, nil
+}
+
+func debugfsReadFile(rootfsPath, target string) ([]byte, error) {
+	tempFile, err := os.CreateTemp("", "keel-debugfs-*")
+	if err != nil {
+		return nil, err
+	}
+	tempPath := tempFile.Name()
+	if err := tempFile.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return nil, err
+	}
+	defer os.Remove(tempPath)
+
+	cmd := exec.Command("debugfs", "-R", fmt.Sprintf("dump %s %s", target, tempPath), rootfsPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("debugfs dump %q: %w: %s", target, err, output)
+	}
+	return os.ReadFile(tempPath)
 }
 
 func isExistingPathMkdir(output []byte) bool {

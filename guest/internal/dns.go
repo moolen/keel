@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	hostCID  = 2
-	dnsPort  = 3053
-	dnsAddr  = "127.0.0.1:53"
+	hostCID = 2
+	dnsPort = 3053
+	dnsAddr = "127.0.0.1:53"
 )
 
 func StartDNSForwarder(ctx context.Context) error {
@@ -48,7 +48,7 @@ func StartDNSForwarder(ctx context.Context) error {
 		}
 	}()
 
-	return os.WriteFile("/etc/resolv.conf", []byte("nameserver 127.0.0.1\noptions ndots:0\n"), 0o644)
+	return os.WriteFile("/etc/resolv.conf", []byte(resolvConfContents()), 0o644)
 }
 
 func forwardDNSQuery(ctx context.Context, payload []byte) ([]byte, error) {
@@ -85,4 +85,8 @@ func writeDNSPacket(w io.Writer, payload []byte) error {
 	}
 	_, err := w.Write(payload)
 	return err
+}
+
+func resolvConfContents() string {
+	return "nameserver 127.0.0.1\nsearch .\noptions ndots:0\n"
 }

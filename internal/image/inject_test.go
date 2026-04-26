@@ -93,18 +93,123 @@ func TestEnsureGuestAgentRefreshesDigest(t *testing.T) {
 	}
 }
 
+func TestEnsureGuestAgentOverwritesExistingBinary(t *testing.T) {
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		t.Skip("debugfs is required for rootfs injection tests")
+	}
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for rootfs injection tests")
+	}
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if _, err := CreateRootfsImage(CreateRootfsOptions{
+		SourceDir: t.TempDir(),
+		ImagePath: rootfsPath,
+		SizeMB:    128,
+	}); err != nil {
+		t.Fatalf("CreateRootfsImage() error = %v", err)
+	}
+	if err := InjectGuestAgent(rootfsPath, GuestAgentAssets{
+		Binary:     []byte("agent-v1"),
+		InitScript: "#!/bin/sh\nexec /usr/local/bin/keel-agent\n",
+	}); err != nil {
+		t.Fatalf("InjectGuestAgent(v1) error = %v", err)
+	}
+
+	digestPath := filepath.Join(t.TempDir(), "guest-agent.sha256")
+	if err := os.WriteFile(digestPath, []byte("stale\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	refreshed, err := EnsureGuestAgent(rootfsPath, digestPath, GuestAgentAssets{
+		Binary:     []byte("agent-v2"),
+		InitScript: "#!/bin/sh\nexec /usr/local/bin/keel-agent\n",
+	})
+	if err != nil {
+		t.Fatalf("EnsureGuestAgent() error = %v", err)
+	}
+	if !refreshed {
+		t.Fatal("expected EnsureGuestAgent to refresh existing binary")
+	}
+	if got := debugfsRead(t, rootfsPath, "/usr/local/bin/keel-agent"); got != "agent-v2" {
+		t.Fatalf("guest agent content = %q", got)
+	}
+}
+
 func TestEnsureGuestAgentSkipsMatchingDigest(t *testing.T) {
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		t.Skip("debugfs is required for rootfs injection tests")
+	}
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for rootfs injection tests")
+	}
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if _, err := CreateRootfsImage(CreateRootfsOptions{
+		SourceDir: t.TempDir(),
+		ImagePath: rootfsPath,
+		SizeMB:    128,
+	}); err != nil {
+		t.Fatalf("CreateRootfsImage() error = %v", err)
+	}
+
 	digestPath := filepath.Join(t.TempDir(), "guest-agent.sha256")
 	assets := GuestAgentAssets{Binary: []byte("agent-same")}
+	if err := InjectGuestAgent(rootfsPath, assets); err != nil {
+		t.Fatalf("InjectGuestAgent() error = %v", err)
+	}
 	if err := os.WriteFile(digestPath, []byte(assets.Digest()+"\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	refreshed, err := EnsureGuestAgent(filepath.Join(t.TempDir(), "rootfs.ext4"), digestPath, assets)
+	refreshed, err := EnsureGuestAgent(rootfsPath, digestPath, assets)
 	if err != nil {
 		t.Fatalf("EnsureGuestAgent() error = %v", err)
 	}
 	if refreshed {
 		t.Fatal("expected EnsureGuestAgent to skip matching digest")
+	}
+}
+
+func TestEnsureGuestAgentRepairsStaleBinaryWhenDigestMarkerMatches(t *testing.T) {
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		t.Skip("debugfs is required for rootfs injection tests")
+	}
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for rootfs injection tests")
+	}
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if _, err := CreateRootfsImage(CreateRootfsOptions{
+		SourceDir: t.TempDir(),
+		ImagePath: rootfsPath,
+		SizeMB:    128,
+	}); err != nil {
+		t.Fatalf("CreateRootfsImage() error = %v", err)
+	}
+	if err := InjectGuestAgent(rootfsPath, GuestAgentAssets{
+		Binary:     []byte("agent-v1"),
+		InitScript: "#!/bin/sh\nexec /usr/local/bin/keel-agent\n",
+	}); err != nil {
+		t.Fatalf("InjectGuestAgent(v1) error = %v", err)
+	}
+
+	assets := GuestAgentAssets{
+		Binary:     []byte("agent-v2"),
+		InitScript: "#!/bin/sh\nexec /usr/local/bin/keel-agent\n",
+	}
+	digestPath := filepath.Join(t.TempDir(), "guest-agent.sha256")
+	if err := os.WriteFile(digestPath, []byte(assets.Digest()+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	refreshed, err := EnsureGuestAgent(rootfsPath, digestPath, assets)
+	if err != nil {
+		t.Fatalf("EnsureGuestAgent() error = %v", err)
+	}
+	if !refreshed {
+		t.Fatal("expected EnsureGuestAgent to repair stale binary")
+	}
+	if got := debugfsRead(t, rootfsPath, "/usr/local/bin/keel-agent"); got != "agent-v2" {
+		t.Fatalf("guest agent content = %q", got)
 	}
 }
 

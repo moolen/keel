@@ -2,9 +2,12 @@ package internal
 
 import (
 	"context"
+	"net"
 	"os"
+	"strings"
 
 	guestfeatures "github.com/moolen/keel/guest/internal/features"
+	"golang.org/x/sys/unix"
 )
 
 func Bootstrap(command []string, env []string, configured []guestfeatures.ConfiguredFeature) error {
@@ -16,6 +19,9 @@ func Bootstrap(command []string, env []string, configured []guestfeatures.Config
 		return err
 	}
 	if err := ensureLoopbackUp(); err != nil {
+		return err
+	}
+	if err := ensureResolverHostname(); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -31,4 +37,19 @@ func Bootstrap(command []string, env []string, configured []guestfeatures.Config
 		return err
 	}
 	return ServePTY(command, cwd, proxyEnv)
+}
+
+func ensureResolverHostname() error {
+	return ensureResolverHostnameWith(os.Hostname, unix.Sethostname)
+}
+
+func ensureResolverHostnameWith(getHostname func() (string, error), setHostname func([]byte) error) error {
+	hostname, err := getHostname()
+	if err != nil {
+		return err
+	}
+	if hostname == "" || net.ParseIP(hostname) != nil || strings.Contains(hostname, ".") {
+		return setHostname([]byte("keel"))
+	}
+	return nil
 }
