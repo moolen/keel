@@ -218,7 +218,7 @@ func coreMounts() []coreMount {
 		{"cgroup2", "/sys/fs/cgroup", "cgroup2", 0, ""},
 		{"devtmpfs", "/dev", "devtmpfs", 0, "mode=0755"},
 		{"devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666,mode=0620"},
-		{"tmpfs", "/tmp", "tmpfs", 0, "mode=1777,nosuid,nodev"},
+		{"tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV, "mode=1777"},
 	}
 }
 

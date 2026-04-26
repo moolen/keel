@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,5 +60,44 @@ func TestLoadGuestAgentAssetsReturnsBuildHint(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "dist/keel-agent") {
 		t.Fatalf("error = %q, want searched path hint", err)
+	}
+}
+
+func TestImageListCommandPrintsReferenceAndSize(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte("image_cache_dir: "+filepath.Join(projectDir, "cache")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rootfsPath := filepath.Join(projectDir, "cache", "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Dependencies{})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	cmd.SetArgs([]string{"image", "list"})
+	t.Chdir(projectDir)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "index.docker.io/library/ubuntu:24.04") {
+		t.Fatalf("output = %q, want listed reference", output)
+	}
+	if !strings.Contains(output, "11 B") {
+		t.Fatalf("output = %q, want size column", output)
 	}
 }

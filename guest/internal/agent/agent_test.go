@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"reflect"
+	"syscall"
 	"testing"
 
 	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
@@ -135,7 +136,7 @@ func TestCoreMountsIncludesCgroup2(t *testing.T) {
 func TestCoreMountsIncludesTmpfsForTmp(t *testing.T) {
 	mounts := coreMounts()
 	for _, mount := range mounts {
-		if mount.target == "/tmp" && mount.fstype == "tmpfs" && mount.data == "mode=1777,nosuid,nodev" {
+		if mount.target == "/tmp" && mount.fstype == "tmpfs" && mount.data == "mode=1777" && mount.flags == syscall.MS_NOSUID|syscall.MS_NODEV {
 			return
 		}
 	}

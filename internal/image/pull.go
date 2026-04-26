@@ -32,12 +32,16 @@ type PullResult struct {
 type CachedImage struct {
 	Reference  string
 	RootfsPath string
+	SizeBytes  int64
 }
 
 func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullResult, error) {
 	layout, err := ResolveCacheLayout(cacheDir, ref)
 	if err != nil {
 		return PullResult{}, err
+	}
+	if cacheLayoutReady(layout, p.GuestInit != nil) {
+		return PullResult{Layout: layout}, nil
 	}
 	if err := os.MkdirAll(layout.Directory, 0o755); err != nil {
 		return PullResult{}, err
@@ -94,6 +98,20 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 	return PullResult{Layout: layout}, nil
 }
 
+func cacheLayoutReady(layout CacheLayout, requireAgent bool) bool {
+	required := []string{layout.RootfsPath, layout.OCIPath}
+	if requireAgent {
+		required = append(required, layout.AgentPath)
+	}
+	for _, path := range required {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
 func ListCachedImages(cacheDir string) ([]CachedImage, error) {
 	var images []CachedImage
 	err := filepath.WalkDir(cacheDir, func(path string, d os.DirEntry, err error) error {
@@ -117,6 +135,7 @@ func ListCachedImages(cacheDir string) ([]CachedImage, error) {
 		images = append(images, CachedImage{
 			Reference:  fmt.Sprintf("%s/%s:%s", registry, repository, tag),
 			RootfsPath: path,
+			SizeBytes:  sizeForFile(path),
 		})
 		return nil
 	})
@@ -127,6 +146,14 @@ func ListCachedImages(cacheDir string) ([]CachedImage, error) {
 		return images[i].Reference < images[j].Reference
 	})
 	return images, nil
+}
+
+func sizeForFile(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 func RemoveCachedImage(cacheDir, ref string) error {

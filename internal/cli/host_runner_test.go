@@ -12,7 +12,9 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/moolen/keel/internal/config"
 	"github.com/moolen/keel/internal/hypervisor"
@@ -20,6 +22,7 @@ import (
 	"github.com/moolen/keel/internal/network"
 	"github.com/moolen/keel/internal/vm"
 	"github.com/moolen/keel/internal/volume"
+	"github.com/moolen/keel/internal/vsock"
 	"github.com/moolen/keel/internal/workspace"
 	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
 )
@@ -47,6 +50,92 @@ func TestHostRunnerDryRunPrintsSummary(t *testing.T) {
 	output := stdout.String()
 	if !strings.Contains(output, "dry-run") || !strings.Contains(output, "debian:bookworm") {
 		t.Fatalf("unexpected output: %q", output)
+	}
+}
+
+func TestForwardedPTYStdinSkipsNonTerminalWhenSyncConfirmEnabled(t *testing.T) {
+	stdin, err := os.CreateTemp(t.TempDir(), "stdin-*")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	defer stdin.Close()
+
+	cfg := config.Default()
+	cfg.Workspace.SyncConfirm = true
+	if got := forwardedPTYStdin(RunRequest{Config: cfg, Stdin: stdin}); got != nil {
+		t.Fatalf("forwardedPTYStdin() = %v, want nil", got)
+	}
+}
+
+func TestForwardedPTYStdinAllowsNonTerminalWithoutSyncConfirm(t *testing.T) {
+	stdin, err := os.CreateTemp(t.TempDir(), "stdin-*")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	defer stdin.Close()
+
+	cfg := config.Default()
+	cfg.Workspace.SyncConfirm = false
+	if got := forwardedPTYStdin(RunRequest{Config: cfg, Stdin: stdin}); got != stdin {
+		t.Fatalf("forwardedPTYStdin() = %v, want %v", got, stdin)
+	}
+}
+
+func TestRunPreparedVMLeavesPipedInputForSyncConfirmation(t *testing.T) {
+	tempDir := t.TempDir()
+	stdin, err := os.CreateTemp(t.TempDir(), "stdin-*")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	defer stdin.Close()
+	if _, err := stdin.WriteString("y\n"); err != nil {
+		t.Fatalf("WriteString() error = %v", err)
+	}
+	if _, err := stdin.Seek(0, 0); err != nil {
+		t.Fatalf("Seek() error = %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.Network.Mode = "none"
+	cfg.Workspace.SyncBack = true
+	cfg.Workspace.SyncConfirm = true
+
+	assets := runtimeAssetsForHostRunnerVMTest(t, tempDir)
+	vmInstance := &capturePTYInputVM{}
+	machine := vm.NewMachine(cfg, assets)
+	machine.NewVM = func(hypervisor.Config) (hypervisor.VM, error) {
+		return vmInstance, nil
+	}
+
+	var stdout bytes.Buffer
+	var syncInput string
+	runner := HostRunner{
+		SyncWorkspace: func(opts workspace.ImageSyncOptions) (workspace.SyncResult, error) {
+			data, err := io.ReadAll(opts.In)
+			if err != nil {
+				return workspace.SyncResult{}, err
+			}
+			syncInput = string(data)
+			return workspace.SyncResult{Applied: true}, nil
+		},
+	}
+
+	req := RunRequest{
+		Config: cfg,
+		Stdin:  stdin,
+		Stdout: &stdout,
+	}
+	if err := runner.runPreparedVM(context.Background(), req, machine, nopProgressReporter{}); err != nil {
+		t.Fatalf("runPreparedVM() error = %v", err)
+	}
+	if err := runner.syncWorkspace(req, assets); err != nil {
+		t.Fatalf("syncWorkspace() error = %v", err)
+	}
+	if got := vmInstance.Input(); got != "" {
+		t.Fatalf("PTY input = %q, want empty", got)
+	}
+	if got, want := syncInput, "y\n"; got != want {
+		t.Fatalf("sync input = %q, want %q", got, want)
 	}
 }
 
@@ -1152,6 +1241,67 @@ func (v *stubHypervisorVM) VSockListen(port uint32) (net.Listener, error) {
 }
 
 var _ hypervisor.VM = (*stubHypervisorVM)(nil)
+
+type capturePTYInputVM struct {
+	mu    sync.Mutex
+	input bytes.Buffer
+}
+
+func (*capturePTYInputVM) Start(context.Context) error { return nil }
+func (*capturePTYInputVM) Stop(context.Context) error  { return nil }
+func (*capturePTYInputVM) Wait(context.Context) error  { return nil }
+
+func (*capturePTYInputVM) VSockListen(port uint32) (net.Listener, error) {
+	return net.Listen("unix", filepath.Join(os.TempDir(), "keel-vsock-"+strconv.Itoa(int(port))+"-"+strconv.FormatInt(time.Now().UnixNano(), 10)))
+}
+
+func (v *capturePTYInputVM) VSockConnect(uint32) (net.Conn, error) {
+	server, client := net.Pipe()
+	go func() {
+		defer server.Close()
+		_ = server.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		for {
+			frame, err := vsock.ReadFrame(server)
+			if err != nil {
+				break
+			}
+			if frame.Type == vsock.MessageData {
+				v.mu.Lock()
+				_, _ = v.input.Write(frame.Data)
+				v.mu.Unlock()
+			}
+		}
+		_ = vsock.WriteExitFrame(server, 0)
+	}()
+	return client, nil
+}
+
+func (v *capturePTYInputVM) Input() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.input.String()
+}
+
+func runtimeAssetsForHostRunnerVMTest(t *testing.T, dir string) vm.RuntimeAssets {
+	t.Helper()
+	assets := vm.RuntimeAssets{
+		KernelPath:    filepath.Join(dir, "vmlinux"),
+		RootfsPath:    filepath.Join(dir, "rootfs.ext4"),
+		WorkspacePath: filepath.Join(dir, "workspace.ext4"),
+		MetadataPath:  filepath.Join(dir, "bootmeta.ext4"),
+		SocketPath:    filepath.Join(dir, "firecracker.sock"),
+		VSockPath:     filepath.Join(dir, "firecracker.vsock"),
+		LogPath:       filepath.Join(dir, "firecracker.log"),
+		RuntimeDir:    dir,
+		CID:           52,
+	}
+	for _, path := range []string{assets.KernelPath, assets.RootfsPath, assets.WorkspacePath, assets.MetadataPath} {
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", path, err)
+		}
+	}
+	return assets
+}
 
 func debugfsReadCLI(t *testing.T, imagePath, target string) string {
 	t.Helper()

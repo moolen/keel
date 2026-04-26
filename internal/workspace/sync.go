@@ -108,16 +108,26 @@ func mountImageReadOnly(imagePath string) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
-	cmd := exec.Command("sudo", "mount", "-o", "loop,ro", imagePath, mountDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		_ = os.RemoveAll(mountDir)
-		return "", nil, fmt.Errorf("mount workspace image: %w: %s", err, output)
+
+	// Prefer a read-only loop mount, but fall back to a writable mount when
+	// ext4 requires journal recovery after the guest shuts down.
+	var mountErr error
+	var mountOutput []byte
+	for _, options := range []string{"loop,ro", "loop"} {
+		cmd := exec.Command("sudo", "mount", "-o", options, imagePath, mountDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			mountErr = fmt.Errorf("mount -o %s: %w", options, err)
+			mountOutput = output
+			continue
+		}
+		cleanup := func() {
+			_ = exec.Command("sudo", "umount", mountDir).Run()
+			_ = os.RemoveAll(mountDir)
+		}
+		return mountDir, cleanup, nil
 	}
-	cleanup := func() {
-		_ = exec.Command("sudo", "umount", mountDir).Run()
-		_ = os.RemoveAll(mountDir)
-	}
-	return mountDir, cleanup, nil
+	_ = os.RemoveAll(mountDir)
+	return "", nil, fmt.Errorf("mount workspace image: %w: %s", mountErr, mountOutput)
 }
 
 func printDiffSummary(w io.Writer, diff Diff) {

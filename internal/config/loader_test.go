@@ -111,6 +111,40 @@ image_cache_dir: ~/.cache/custom-keel/images
 	}
 }
 
+func TestLoadProjectWorkspaceBooleansCanDisableDefaults(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	mkdirAll(t, filepath.Join(tmpHome, ".config", "keel"))
+	writeFile(t, filepath.Join(projectDir, "keel.yaml"), `
+workspace:
+  mount: .
+  sync_back: false
+  sync_deletes: false
+  sync_confirm: false
+network:
+  deny_if_no_sni: false
+`)
+
+	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Workspace.SyncBack {
+		t.Fatalf("cfg.Workspace.SyncBack = true, want false")
+	}
+	if cfg.Workspace.SyncDeletes {
+		t.Fatalf("cfg.Workspace.SyncDeletes = true, want false")
+	}
+	if cfg.Workspace.SyncConfirm {
+		t.Fatalf("cfg.Workspace.SyncConfirm = true, want false")
+	}
+	if cfg.Network.DenyIfNoSNI {
+		t.Fatalf("cfg.Network.DenyIfNoSNI = true, want false")
+	}
+}
+
 func TestLoadParsesMITMAndHTTPPolicy(t *testing.T) {
 	tmpHome := t.TempDir()
 	projectDir := t.TempDir()

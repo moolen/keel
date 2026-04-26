@@ -66,6 +66,48 @@ func TestPullAndCacheMaterializesArtifacts(t *testing.T) {
 	}
 }
 
+func TestPullAndCacheReturnsCachedLayoutWithoutFetching(t *testing.T) {
+	cacheDir := t.TempDir()
+	layout, err := ResolveCacheLayout(cacheDir, "ghcr.io/moolen/keel:test")
+	if err != nil {
+		t.Fatalf("ResolveCacheLayout() error = %v", err)
+	}
+	if err := os.MkdirAll(layout.Directory, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	for _, item := range []struct {
+		path string
+		data string
+	}{
+		{path: layout.RootfsPath, data: "rootfs"},
+		{path: layout.OCIPath, data: "oci"},
+		{path: layout.AgentPath, data: "digest"},
+	} {
+		if err := os.WriteFile(item.path, []byte(item.data), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", item.path, err)
+		}
+	}
+
+	puller := Puller{
+		Fetch: func(context.Context, string) (v1.Image, error) {
+			t.Fatal("Fetch() should not be called when cache exists")
+			return nil, nil
+		},
+		GuestInit: func() (GuestAgentAssets, error) {
+			t.Fatal("GuestInit() should not be called when cache exists")
+			return GuestAgentAssets{}, nil
+		},
+	}
+
+	result, err := puller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:test")
+	if err != nil {
+		t.Fatalf("PullAndCache() error = %v", err)
+	}
+	if result.Layout.Directory != layout.Directory {
+		t.Fatalf("result.Layout.Directory = %q, want %q", result.Layout.Directory, layout.Directory)
+	}
+}
+
 func testImage(t *testing.T, files map[string]string) v1.Image {
 	t.Helper()
 
@@ -124,6 +166,9 @@ func TestListCachedImages(t *testing.T) {
 	}
 	if images[0].Reference != "ghcr.io/moolen/keel:test" {
 		t.Fatalf("images[0].Reference = %q", images[0].Reference)
+	}
+	if images[0].SizeBytes != 1 {
+		t.Fatalf("images[0].SizeBytes = %d, want 1", images[0].SizeBytes)
 	}
 }
 

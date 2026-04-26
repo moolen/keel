@@ -21,14 +21,22 @@ type OverrideConfig struct {
 }
 
 type mergePresenceConfig struct {
-	Network mergePresenceNetworkConfig  `yaml:"network"`
-	Process *mergePresenceProcessConfig `yaml:"process"`
+	Workspace mergePresenceWorkspaceConfig `yaml:"workspace"`
+	Network   mergePresenceNetworkConfig   `yaml:"network"`
+	Process   *mergePresenceProcessConfig  `yaml:"process"`
+}
+
+type mergePresenceWorkspaceConfig struct {
+	SyncBack    *bool `yaml:"sync_back"`
+	SyncDeletes *bool `yaml:"sync_deletes"`
+	SyncConfirm *bool `yaml:"sync_confirm"`
 }
 
 type mergePresenceNetworkConfig struct {
-	Audit *bool                    `yaml:"audit"`
-	MITM  *mergePresenceMITMConfig `yaml:"mitm"`
-	HTTP  *mergePresenceHTTPConfig `yaml:"http"`
+	Audit        *bool                    `yaml:"audit"`
+	DenyIfNoSNI  *bool                    `yaml:"deny_if_no_sni"`
+	MITM         *mergePresenceMITMConfig `yaml:"mitm"`
+	HTTP         *mergePresenceHTTPConfig `yaml:"http"`
 }
 
 type mergePresenceMITMConfig struct {
@@ -185,10 +193,14 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	if src.Workspace.Target != "" {
 		dst.Workspace.Target = src.Workspace.Target
 	}
-	dst.Workspace.SyncBack = dst.Workspace.SyncBack || src.Workspace.SyncBack
-	dst.Workspace.SyncDeletes = dst.Workspace.SyncDeletes || src.Workspace.SyncDeletes
-	if src.Workspace.SyncConfirm {
-		dst.Workspace.SyncConfirm = true
+	if presence.Workspace.SyncBack != nil {
+		dst.Workspace.SyncBack = src.Workspace.SyncBack
+	}
+	if presence.Workspace.SyncDeletes != nil {
+		dst.Workspace.SyncDeletes = src.Workspace.SyncDeletes
+	}
+	if presence.Workspace.SyncConfirm != nil {
+		dst.Workspace.SyncConfirm = src.Workspace.SyncConfirm
 	}
 	if src.Network.Mode != "" {
 		dst.Network.Mode = src.Network.Mode
@@ -196,7 +208,9 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	if presence.Network.Audit != nil {
 		dst.Network.Audit = src.Network.Audit
 	}
-	dst.Network.DenyIfNoSNI = dst.Network.DenyIfNoSNI || src.Network.DenyIfNoSNI
+	if presence.Network.DenyIfNoSNI != nil {
+		dst.Network.DenyIfNoSNI = src.Network.DenyIfNoSNI
+	}
 	if len(src.Network.DNS.Allowed) > 0 {
 		dst.Network.DNS.Allowed = append([]string(nil), src.Network.DNS.Allowed...)
 	}

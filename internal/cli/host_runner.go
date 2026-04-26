@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,11 +15,13 @@ import (
 	"github.com/moolen/keel/internal/hypervisor"
 	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/network"
+	keelpty "github.com/moolen/keel/internal/pty"
 	"github.com/moolen/keel/internal/runtimeenv"
 	"github.com/moolen/keel/internal/vm"
 	"github.com/moolen/keel/internal/volume"
 	"github.com/moolen/keel/internal/workspace"
 	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
+	"golang.org/x/term"
 )
 
 type machineRunner interface {
@@ -141,6 +144,28 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 }
 
 func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *vm.Machine, progress progressReporter) error {
+	if machine.AttachPTY == nil {
+		machine.AttachPTY = func(ctx context.Context, instance hypervisor.VM) error {
+			stdin := forwardedPTYStdin(req)
+			if stdin == nil {
+				devNull, err := os.Open(os.DevNull)
+				if err != nil {
+					return err
+				}
+				defer devNull.Close()
+				stdin = devNull
+			}
+			client := keelpty.Client{
+				SocketPath: "ignored",
+				Stdin:      stdin,
+				Stdout:     req.Stdout,
+				Dial: func(_ context.Context, _ string, port uint32) (net.Conn, error) {
+					return instance.VSockConnect(port)
+				},
+			}
+			return client.Run(ctx)
+		}
+	}
 	instance, cleanup, err := machine.Prepare(ctx)
 	if err != nil {
 		return err
@@ -167,6 +192,17 @@ func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *
 		return err
 	}
 	return instance.Wait(ctx)
+}
+
+func forwardedPTYStdin(req RunRequest) *os.File {
+	stdin, ok := req.Stdin.(*os.File)
+	if !ok {
+		return nil
+	}
+	if req.Config.Workspace.SyncConfirm && !term.IsTerminal(int(stdin.Fd())) {
+		return nil
+	}
+	return stdin
 }
 
 func (r HostRunner) newProgressReporter(req RunRequest) progressReporter {

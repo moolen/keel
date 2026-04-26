@@ -54,7 +54,7 @@ func newImageCommand(deps Dependencies) *cobra.Command {
 					return err
 				}
 				for _, cached := range images {
-					if _, err := fmt.Fprintln(cmd.OutOrStdout(), cached.Reference); err != nil {
+					if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", cached.Reference, formatBytes(cached.SizeBytes)); err != nil {
 						return err
 					}
 				}
@@ -128,4 +128,21 @@ func loadCLIConfig(ctx context.Context, deps Dependencies) (config.Config, error
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
 	return cfg, nil
+}
+
+func formatBytes(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+
+	value := float64(size)
+	suffixes := []string{"KiB", "MiB", "GiB", "TiB"}
+	for _, suffix := range suffixes {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1f PiB", value/unit)
 }
