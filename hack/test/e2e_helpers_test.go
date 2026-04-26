@@ -100,6 +100,87 @@ network:
 	return nil
 }
 
+func runMITMHTTPPolicyE2E(t *testing.T) error {
+	t.Helper()
+
+	requireE2EPrerequisites(t)
+
+	repoRoot := findRepoRoot(t)
+	artifacts := buildArtifacts(t, repoRoot)
+
+	tmpHome := t.TempDir()
+	projectDir := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		return err
+	}
+
+	config := strings.Builder{}
+	config.WriteString("image: curlimages/curl:latest\n")
+	config.WriteString("image_cache_dir: " + filepath.Join(tmpHome, ".cache", "keel", "images") + "\n")
+	hostKernelPath := filepath.Join(os.Getenv("HOME"), ".cache", "keel", "kernel", "vmlinux")
+	if _, err := os.Stat(hostKernelPath); err == nil {
+		config.WriteString("kernel:\n")
+		config.WriteString("  path: " + hostKernelPath + "\n")
+	}
+	config.WriteString(`workspace:
+  mount: .
+  target: /workspace
+network:
+  mitm:
+    enabled: true
+    ca:
+      install_system: true
+  dns:
+    allowed:
+      - httpbin.org
+  tls:
+    allowed_sni:
+      - httpbin.org
+  http:
+    default: deny
+    rules:
+      - action: allow
+        host: httpbin.org
+        methods: ["GET"]
+        paths: ["/get"]
+`)
+	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte(config.String()), 0o644); err != nil {
+		return err
+	}
+
+	allowedOut, allowedErr := runKeelCommand(projectDir, artifacts.keelPath, tmpHome, []string{"--", "curl", "-fsS", "https://httpbin.org/get"})
+	if allowedErr != nil {
+		return fmt.Errorf("mitm allow run failed: %w\n%s", allowedErr, allowedOut)
+	}
+	allowedText := string(allowedOut)
+	for _, want := range []string{
+		`"url": "https://httpbin.org/get"`,
+		"Network summary:",
+		"http httpbin.org GET /get policy=allowed",
+	} {
+		if !strings.Contains(allowedText, want) {
+			return fmt.Errorf("mitm allow output missing %q\n%s", want, allowedText)
+		}
+	}
+
+	deniedOut, deniedErr := runKeelCommand(projectDir, artifacts.keelPath, tmpHome, []string{"--", "curl", "-fsS", "https://httpbin.org/anything"})
+	if deniedErr == nil {
+		return fmt.Errorf("mitm deny run unexpectedly succeeded\n%s", deniedOut)
+	}
+	deniedText := string(deniedOut)
+	for _, want := range []string{
+		"403",
+		"Network summary:",
+		"http httpbin.org GET /anything policy=denied",
+	} {
+		if !strings.Contains(deniedText, want) {
+			return fmt.Errorf("mitm deny output missing %q\n%s", want, deniedText)
+		}
+	}
+
+	return nil
+}
+
 type builtArtifacts struct {
 	keelPath string
 }
@@ -180,4 +261,14 @@ func runCmdEnv(t *testing.T, dir string, extraEnv []string, name string, args ..
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output.String())
 	}
+}
+
+func runKeelCommand(projectDir, keelPath, home string, args []string) ([]byte, error) {
+	cmd := exec.Command(keelPath, args...)
+	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+	)
+	return cmd.CombinedOutput()
 }

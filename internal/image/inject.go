@@ -1,6 +1,7 @@
 package image
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -106,6 +107,14 @@ fi
 	if err := writeFileIntoExt4(rootfsPath, "/etc/keel/install-ca.sh", scriptPath); err != nil {
 		return err
 	}
+	for _, bundlePath := range []string{
+		"/etc/ssl/certs/ca-certificates.crt",
+		"/etc/ssl/cert.pem",
+	} {
+		if err := appendPEMToExt4FileIfPresent(rootfsPath, bundlePath, assets.CACertPEM); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -165,6 +174,35 @@ func writeFileIntoExt4(rootfsPath, targetPath, sourcePath string) error {
 		return err
 	}
 	return debugfsWrite(rootfsPath, fmt.Sprintf("write %s %s", sourcePath, targetPath))
+}
+
+func appendPEMToExt4FileIfPresent(rootfsPath, targetPath string, data []byte) error {
+	existing, err := debugfsReadFile(rootfsPath, targetPath)
+	if err != nil {
+		if strings.Contains(err.Error(), "File not found") {
+			return nil
+		}
+		return err
+	}
+	if bytes.Contains(existing, data) {
+		return nil
+	}
+
+	tempDir, err := os.MkdirTemp("", "keel-trust-bundle-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+
+	combined := append(append(bytes.TrimRight(existing, "\n"), '\n'), data...)
+	if len(combined) == 0 || combined[len(combined)-1] != '\n' {
+		combined = append(combined, '\n')
+	}
+	tempPath := filepath.Join(tempDir, "bundle.pem")
+	if err := os.WriteFile(tempPath, combined, 0o644); err != nil {
+		return err
+	}
+	return writeFileIntoExt4(rootfsPath, targetPath, tempPath)
 }
 
 func debugfsRemove(rootfsPath, target string) error {

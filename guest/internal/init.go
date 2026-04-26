@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 
 	guestfeatures "github.com/moolen/keel/guest/internal/features"
@@ -22,6 +23,9 @@ func Bootstrap(command []string, env []string, configured []guestfeatures.Config
 		return err
 	}
 	if err := ensureResolverHostname(); err != nil {
+		return err
+	}
+	if err := runGuestTrustHook(); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,4 +56,24 @@ func ensureResolverHostnameWith(getHostname func() (string, error), setHostname 
 		return setHostname([]byte("keel"))
 	}
 	return nil
+}
+
+func runGuestTrustHook() error {
+	return runGuestTrustHookWith(os.Stat, func(path string) error {
+		cmd := exec.Command("/bin/sh", path)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	})
+}
+
+func runGuestTrustHookWith(stat func(string) (os.FileInfo, error), run func(string) error) error {
+	const hookPath = "/etc/keel/install-ca.sh"
+	if _, err := stat(hookPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return run(hookPath)
 }

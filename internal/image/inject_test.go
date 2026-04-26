@@ -81,6 +81,45 @@ func TestInjectGuestTrust(t *testing.T) {
 	}
 }
 
+func TestInjectGuestTrustAppendsToExistingBundle(t *testing.T) {
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		t.Skip("debugfs is required for rootfs injection tests")
+	}
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for rootfs injection tests")
+	}
+
+	sourceDir := t.TempDir()
+	bundleDir := filepath.Join(sourceDir, "etc", "ssl", "certs")
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "ca-certificates.crt"), []byte("system-ca\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if _, err := CreateRootfsImage(CreateRootfsOptions{
+		SourceDir: sourceDir,
+		ImagePath: rootfsPath,
+		SizeMB:    128,
+	}); err != nil {
+		t.Fatalf("CreateRootfsImage() error = %v", err)
+	}
+
+	if err := InjectGuestTrust(rootfsPath, GuestTrustAssets{
+		Enabled:   true,
+		CACertPEM: []byte("trust-ca"),
+	}); err != nil {
+		t.Fatalf("InjectGuestTrust() error = %v", err)
+	}
+
+	got := debugfsRead(t, rootfsPath, "/etc/ssl/certs/ca-certificates.crt")
+	if !strings.Contains(got, "system-ca") || !strings.Contains(got, "trust-ca") {
+		t.Fatalf("bundle content = %q", got)
+	}
+}
+
 func TestEnsureGuestAgentRefreshesDigest(t *testing.T) {
 	if _, err := exec.LookPath("debugfs"); err != nil {
 		t.Skip("debugfs is required for rootfs injection tests")
