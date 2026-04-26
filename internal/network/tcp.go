@@ -1,20 +1,26 @@
 package network
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 type TCPProxy struct {
 	Policy      *PolicyEngine
 	DialContext func(context.Context, string, string) (net.Conn, error)
+	MITM        *MITMProxy
 	Summary     *Summary
 	Now         func() time.Time
 }
@@ -72,8 +78,9 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 
 	preface := []byte(nil)
 	sni := ""
+	inspectErr := error(nil)
 	if port == 443 {
-		preface, sni, err = readTLSClientPreface(conn)
+		preface, sni, inspectErr, err = readTLSClientPreface(conn)
 		if err != nil {
 			return err
 		}
@@ -84,12 +91,36 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 		now = p.Now()
 	}
 	decision := p.Policy.EvaluateTCP(ip, port, sni, now)
+	if decision.Allowed && port == 443 && p.MITM != nil && p.MITM.Enabled && tlsInspectionRequired(preface, sni, inspectErr) {
+		decision = Decision{Reason: "mitm inspection required but client hello parsing failed", Rule: "mitm"}
+	}
 	p.Summary.RecordTCP(summaryHost(p.Policy, ip, sni, now), port, decision)
 	if !decision.Allowed {
 		log.Printf("tcp denied destination=%s sni=%s rule=%s reason=%s", destination, sni, decision.Rule, decision.Reason)
 		return nil
 	}
 	log.Printf("tcp allowed destination=%s sni=%s rule=%s reason=%s", destination, sni, decision.Rule, decision.Reason)
+
+	if p.MITM != nil && port == 80 && p.MITM.Enabled {
+		httpPreface, host, isHTTP, err := readHTTPPreface(conn)
+		if err != nil {
+			return err
+		}
+		if isHTTP && !matchesAnyHostPattern(host, p.MITM.BypassHosts) {
+			return p.MITM.HandleHTTP(ctx, &prefixedConn{
+				Conn:   conn,
+				prefix: bytes.NewReader(httpPreface),
+			}, destination)
+		}
+		preface = httpPreface
+	}
+
+	if p.MITM != nil && port == 443 && len(preface) > 0 && sni != "" && p.MITM.EnabledFor(sni) {
+		return p.MITM.HandleTLS(ctx, &prefixedConn{
+			Conn:   conn,
+			prefix: bytes.NewReader(preface),
+		}, sni, destination)
+	}
 
 	dialContext := p.DialContext
 	if dialContext == nil {
@@ -141,9 +172,9 @@ func parseDestination(destination string) (net.IP, int, error) {
 	return ip, port, nil
 }
 
-func readTLSClientPreface(conn net.Conn) ([]byte, string, error) {
+func readTLSClientPreface(conn net.Conn) ([]byte, string, error, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	defer func() {
 		_ = conn.SetReadDeadline(time.Time{})
@@ -151,19 +182,55 @@ func readTLSClientPreface(conn net.Conn) ([]byte, string, error) {
 
 	header := make([]byte, 5)
 	if _, err := io.ReadFull(conn, header); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	recordLength := int(binary.BigEndian.Uint16(header[3:5]))
 	body := make([]byte, recordLength)
 	if _, err := io.ReadFull(conn, body); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	data := append(header, body...)
-	sni, err := ParseClientHelloSNI(data)
-	if err != nil {
-		return data, "", nil
+	sni, parseErr := parseClientHelloSNI(data)
+	return data, sni, parseErr, nil
+}
+
+func parseClientHelloSNI(data []byte) (sni string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("parse tls client hello: %v", recovered)
+			sni = ""
+		}
+	}()
+	sni, err = ParseClientHelloSNI(data)
+	if err != nil && isIncompleteClientHelloError(err) {
+		return "", errIncompleteClientHello
 	}
-	return data, sni, nil
+	if err != nil && (err.Error() == "sni extension not present" || err.Error() == "host_name entry not present") {
+		return "", errNoSNIExtension
+	}
+	return sni, err
+}
+
+func tlsInspectionRequired(preface []byte, sni string, parseErr error) bool {
+	if parseErr == nil || sni != "" || !looksLikeTLSHandshakeRecord(preface) {
+		return false
+	}
+	if errors.Is(parseErr, errIncompleteClientHello) {
+		return false
+	}
+	return !errors.Is(parseErr, errNoSNIExtension)
+}
+
+func looksLikeTLSHandshakeRecord(preface []byte) bool {
+	return len(preface) >= 5 && preface[0] == 0x16 && preface[1] == 0x03
+}
+
+var errNoSNIExtension = errors.New("sni extension not present")
+var errIncompleteClientHello = errors.New("incomplete client hello")
+
+func isIncompleteClientHelloError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "truncated")
 }
 
 func bridgeTCP(client, upstream net.Conn) error {
@@ -201,6 +268,28 @@ func isIgnorableProxyError(err error) bool {
 	return err == nil || err == io.EOF || err == net.ErrClosed
 }
 
+func readHTTPPreface(conn net.Conn) ([]byte, string, bool, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return nil, "", false, err
+	}
+	defer func() {
+		_ = conn.SetReadDeadline(time.Time{})
+	}()
+
+	reader := bufio.NewReader(conn)
+	var preface bytes.Buffer
+	tee := io.TeeReader(io.LimitReader(reader, 32<<10), &preface)
+	req, err := http.ReadRequest(bufio.NewReader(tee))
+	if err != nil {
+		if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "malformed HTTP request") {
+			return preface.Bytes(), "", false, nil
+		}
+		return nil, "", false, err
+	}
+	closeRequestBody(req)
+	return preface.Bytes(), normalizeHTTPHost(req.Host), true, nil
+}
+
 func readDestinationHeader(r io.Reader) (string, error) {
 	var length [1]byte
 	if _, err := io.ReadFull(r, length[:]); err != nil {
@@ -222,4 +311,16 @@ func writeDestinationHeader(w io.Writer, destination string) error {
 	}
 	_, err := io.WriteString(w, destination)
 	return err
+}
+
+type prefixedConn struct {
+	net.Conn
+	prefix *bytes.Reader
+}
+
+func (c *prefixedConn) Read(p []byte) (int, error) {
+	if c.prefix != nil && c.prefix.Len() > 0 {
+		return c.prefix.Read(p)
+	}
+	return c.Conn.Read(p)
 }
