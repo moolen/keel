@@ -44,13 +44,16 @@ func Default() Config {
 				DeniedSNI:  []string{},
 			},
 			MITM: MITMConfig{
+				Mode:            "optional",
+				OnUntrustedCert: "deny",
 				Bypass: MITMBypassConfig{
 					Hosts: []string{},
 					SNI:   []string{},
 				},
 			},
 			HTTP: HTTPConfig{
-				Rules: []HTTPRuleConfig{},
+				Default: "deny",
+				Rules:   []HTTPRuleConfig{},
 			},
 		},
 		Env: map[string]string{

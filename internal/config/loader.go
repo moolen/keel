@@ -20,6 +20,40 @@ type OverrideConfig struct {
 	DryRun  bool
 }
 
+type mergePresenceConfig struct {
+	Network mergePresenceNetworkConfig `yaml:"network"`
+}
+
+type mergePresenceNetworkConfig struct {
+	MITM *mergePresenceMITMConfig `yaml:"mitm"`
+	HTTP *mergePresenceHTTPConfig `yaml:"http"`
+}
+
+type mergePresenceMITMConfig struct {
+	Enabled         *bool                    `yaml:"enabled"`
+	Mode            *string                  `yaml:"mode"`
+	OnUntrustedCert *string                  `yaml:"on_untrusted_cert"`
+	LogRequests     *bool                    `yaml:"log_requests"`
+	CA              *mergePresenceMITMCA     `yaml:"ca"`
+	Bypass          *mergePresenceMITMBypass `yaml:"bypass"`
+}
+
+type mergePresenceMITMCA struct {
+	Name          *string `yaml:"name"`
+	InstallSystem *bool   `yaml:"install_system"`
+	InstallDocker *bool   `yaml:"install_docker"`
+}
+
+type mergePresenceMITMBypass struct {
+	Hosts *[]string `yaml:"hosts"`
+	SNI   *[]string `yaml:"sni"`
+}
+
+type mergePresenceHTTPConfig struct {
+	Default *string           `yaml:"default"`
+	Rules   *[]HTTPRuleConfig `yaml:"rules"`
+}
+
 func Load(opts LoadOptions) (Config, error) {
 	cfg := Default()
 
@@ -85,11 +119,17 @@ func mergeConfigFile(cfg *Config, path string) error {
 	if err := yaml.Unmarshal(data, &fileCfg); err != nil {
 		return err
 	}
-	mergeConfig(cfg, fileCfg)
+
+	var presenceCfg mergePresenceConfig
+	if err := yaml.Unmarshal(data, &presenceCfg); err != nil {
+		return err
+	}
+
+	mergeConfig(cfg, fileCfg, presenceCfg)
 	return nil
 }
 
-func mergeConfig(dst *Config, src Config) {
+func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	if src.Image != "" {
 		dst.Image = src.Image
 	}
@@ -157,30 +197,46 @@ func mergeConfig(dst *Config, src Config) {
 	if len(src.Network.TLS.DeniedSNI) > 0 {
 		dst.Network.TLS.DeniedSNI = append([]string(nil), src.Network.TLS.DeniedSNI...)
 	}
-	if src.Network.MITM.Mode != "" {
-		dst.Network.MITM.Mode = src.Network.MITM.Mode
+	if presence.Network.MITM != nil {
+		if presence.Network.MITM.Mode != nil {
+			dst.Network.MITM.Mode = src.Network.MITM.Mode
+		}
+		if presence.Network.MITM.Enabled != nil {
+			dst.Network.MITM.Enabled = src.Network.MITM.Enabled
+		}
+		if presence.Network.MITM.OnUntrustedCert != nil {
+			dst.Network.MITM.OnUntrustedCert = src.Network.MITM.OnUntrustedCert
+		}
+		if presence.Network.MITM.LogRequests != nil {
+			dst.Network.MITM.LogRequests = src.Network.MITM.LogRequests
+		}
+		if presence.Network.MITM.CA != nil {
+			if presence.Network.MITM.CA.Name != nil {
+				dst.Network.MITM.CA.Name = src.Network.MITM.CA.Name
+			}
+			if presence.Network.MITM.CA.InstallSystem != nil {
+				dst.Network.MITM.CA.InstallSystem = src.Network.MITM.CA.InstallSystem
+			}
+			if presence.Network.MITM.CA.InstallDocker != nil {
+				dst.Network.MITM.CA.InstallDocker = src.Network.MITM.CA.InstallDocker
+			}
+		}
+		if presence.Network.MITM.Bypass != nil {
+			if presence.Network.MITM.Bypass.Hosts != nil {
+				dst.Network.MITM.Bypass.Hosts = append([]string{}, src.Network.MITM.Bypass.Hosts...)
+			}
+			if presence.Network.MITM.Bypass.SNI != nil {
+				dst.Network.MITM.Bypass.SNI = append([]string{}, src.Network.MITM.Bypass.SNI...)
+			}
+		}
 	}
-	dst.Network.MITM.Enabled = dst.Network.MITM.Enabled || src.Network.MITM.Enabled
-	if src.Network.MITM.OnUntrustedCert != "" {
-		dst.Network.MITM.OnUntrustedCert = src.Network.MITM.OnUntrustedCert
-	}
-	dst.Network.MITM.LogRequests = dst.Network.MITM.LogRequests || src.Network.MITM.LogRequests
-	if src.Network.MITM.CA.Name != "" {
-		dst.Network.MITM.CA.Name = src.Network.MITM.CA.Name
-	}
-	dst.Network.MITM.CA.InstallSystem = dst.Network.MITM.CA.InstallSystem || src.Network.MITM.CA.InstallSystem
-	dst.Network.MITM.CA.InstallDocker = dst.Network.MITM.CA.InstallDocker || src.Network.MITM.CA.InstallDocker
-	if len(src.Network.MITM.Bypass.Hosts) > 0 {
-		dst.Network.MITM.Bypass.Hosts = append([]string(nil), src.Network.MITM.Bypass.Hosts...)
-	}
-	if len(src.Network.MITM.Bypass.SNI) > 0 {
-		dst.Network.MITM.Bypass.SNI = append([]string(nil), src.Network.MITM.Bypass.SNI...)
-	}
-	if src.Network.HTTP.Default != "" {
-		dst.Network.HTTP.Default = src.Network.HTTP.Default
-	}
-	if len(src.Network.HTTP.Rules) > 0 {
-		dst.Network.HTTP.Rules = append([]HTTPRuleConfig(nil), src.Network.HTTP.Rules...)
+	if presence.Network.HTTP != nil {
+		if presence.Network.HTTP.Default != nil {
+			dst.Network.HTTP.Default = src.Network.HTTP.Default
+		}
+		if presence.Network.HTTP.Rules != nil {
+			dst.Network.HTTP.Rules = append([]HTTPRuleConfig{}, src.Network.HTTP.Rules...)
+		}
 	}
 	if len(src.Features) > 0 {
 		dst.Features = append([]FeatureConfig(nil), src.Features...)
