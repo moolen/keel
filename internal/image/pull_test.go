@@ -38,6 +38,10 @@ func TestPullAndCacheMaterializesArtifacts(t *testing.T) {
 				InitScript: "#!/bin/sh\nexec /usr/local/bin/keel-agent\n",
 			}, nil
 		},
+		GuestTrust: GuestTrustAssets{
+			Enabled:   true,
+			CACertPEM: []byte("trust-ca"),
+		},
 	}
 
 	result, err := puller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:test")
@@ -56,6 +60,9 @@ func TestPullAndCacheMaterializesArtifacts(t *testing.T) {
 	}
 	if got := debugfsRead(t, result.Layout.RootfsPath, "/usr/local/bin/keel-agent"); got != "agent-binary" {
 		t.Fatalf("guest agent content = %q", got)
+	}
+	if got := debugfsRead(t, result.Layout.RootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt"); got != "trust-ca" {
+		t.Fatalf("guest trust cert content = %q", got)
 	}
 }
 

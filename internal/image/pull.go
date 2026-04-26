@@ -20,8 +20,9 @@ import (
 )
 
 type Puller struct {
-	Fetch     func(context.Context, string) (v1.Image, error)
-	GuestInit func() (GuestAgentAssets, error)
+	Fetch      func(context.Context, string) (v1.Image, error)
+	GuestInit  func() (GuestAgentAssets, error)
+	GuestTrust GuestTrustAssets
 }
 
 type PullResult struct {
@@ -83,6 +84,9 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 		if _, err := EnsureGuestAgent(layout.RootfsPath, layout.AgentPath, assets); err != nil {
 			return PullResult{}, err
 		}
+	}
+	if err := InjectGuestTrust(layout.RootfsPath, p.GuestTrust); err != nil {
+		return PullResult{}, err
 	}
 
 	return PullResult{Layout: layout}, nil

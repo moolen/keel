@@ -14,6 +14,11 @@ type GuestAgentAssets struct {
 	InitScript string
 }
 
+type GuestTrustAssets struct {
+	Enabled   bool
+	CACertPEM []byte
+}
+
 func (a GuestAgentAssets) Digest() string {
 	sum := sha256.Sum256(a.Binary)
 	return fmt.Sprintf("%x", sum[:])
@@ -45,20 +50,60 @@ func InjectGuestAgent(rootfsPath string, assets GuestAgentAssets) error {
 		return err
 	}
 
-	for _, dir := range []string{"/usr", "/usr/local", "/usr/local/bin", "/etc", "/etc/keel"} {
-		if err := debugfsWrite(rootfsPath, "mkdir "+dir); err != nil {
-			return err
-		}
-	}
-	for _, target := range []string{"/usr/local/bin/keel-agent", "/etc/keel/init.sh"} {
-		if err := debugfsRemove(rootfsPath, target); err != nil {
-			return err
-		}
-	}
-	if err := debugfsWrite(rootfsPath, fmt.Sprintf("write %s /usr/local/bin/keel-agent", binaryPath)); err != nil {
+	if err := ensureExt4Dirs(rootfsPath, "/usr", "/usr/local", "/usr/local/bin", "/etc", "/etc/keel"); err != nil {
 		return err
 	}
-	if err := debugfsWrite(rootfsPath, fmt.Sprintf("write %s /etc/keel/init.sh", initPath)); err != nil {
+	if err := writeFileIntoExt4(rootfsPath, "/usr/local/bin/keel-agent", binaryPath); err != nil {
+		return err
+	}
+	if err := writeFileIntoExt4(rootfsPath, "/etc/keel/init.sh", initPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func InjectGuestTrust(rootfsPath string, assets GuestTrustAssets) error {
+	if !assets.Enabled || len(assets.CACertPEM) == 0 {
+		return nil
+	}
+	if rootfsPath == "" {
+		return fmt.Errorf("rootfs path is required")
+	}
+
+	tempDir, err := os.MkdirTemp("", "keel-trust-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+
+	certPath := filepath.Join(tempDir, "keel-local-ca.crt")
+	if err := os.WriteFile(certPath, assets.CACertPEM, 0o644); err != nil {
+		return err
+	}
+	scriptPath := filepath.Join(tempDir, "install-ca.sh")
+	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+set -eu
+if command -v update-ca-certificates >/dev/null 2>&1; then
+	update-ca-certificates
+fi
+`), 0o755); err != nil {
+		return err
+	}
+
+	if err := ensureExt4Dirs(rootfsPath,
+		"/usr",
+		"/usr/local",
+		"/usr/local/share",
+		"/usr/local/share/ca-certificates",
+		"/etc",
+		"/etc/keel",
+	); err != nil {
+		return err
+	}
+	if err := writeFileIntoExt4(rootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt", certPath); err != nil {
+		return err
+	}
+	if err := writeFileIntoExt4(rootfsPath, "/etc/keel/install-ca.sh", scriptPath); err != nil {
 		return err
 	}
 	return nil
@@ -104,6 +149,22 @@ func debugfsWrite(rootfsPath, command string) error {
 		return fmt.Errorf("debugfs %q: %w: %s", command, err, output)
 	}
 	return nil
+}
+
+func ensureExt4Dirs(rootfsPath string, dirs ...string) error {
+	for _, dir := range dirs {
+		if err := debugfsWrite(rootfsPath, "mkdir "+dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeFileIntoExt4(rootfsPath, targetPath, sourcePath string) error {
+	if err := debugfsRemove(rootfsPath, targetPath); err != nil {
+		return err
+	}
+	return debugfsWrite(rootfsPath, fmt.Sprintf("write %s %s", sourcePath, targetPath))
 }
 
 func debugfsRemove(rootfsPath, target string) error {

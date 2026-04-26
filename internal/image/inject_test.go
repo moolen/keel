@@ -49,6 +49,38 @@ func TestInjectGuestAgent(t *testing.T) {
 	}
 }
 
+func TestInjectGuestTrust(t *testing.T) {
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		t.Skip("debugfs is required for rootfs injection tests")
+	}
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for rootfs injection tests")
+	}
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if _, err := CreateRootfsImage(CreateRootfsOptions{
+		SourceDir: t.TempDir(),
+		ImagePath: rootfsPath,
+		SizeMB:    128,
+	}); err != nil {
+		t.Fatalf("CreateRootfsImage() error = %v", err)
+	}
+
+	if err := InjectGuestTrust(rootfsPath, GuestTrustAssets{
+		Enabled:   true,
+		CACertPEM: []byte("trust-ca"),
+	}); err != nil {
+		t.Fatalf("InjectGuestTrust() error = %v", err)
+	}
+
+	if got := debugfsRead(t, rootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt"); got != "trust-ca" {
+		t.Fatalf("ca cert content = %q", got)
+	}
+	if got := debugfsRead(t, rootfsPath, "/etc/keel/install-ca.sh"); !strings.Contains(got, "update-ca-certificates") {
+		t.Fatalf("install-ca.sh content = %q", got)
+	}
+}
+
 func TestEnsureGuestAgentRefreshesDigest(t *testing.T) {
 	if _, err := exec.LookPath("debugfs"); err != nil {
 		t.Skip("debugfs is required for rootfs injection tests")

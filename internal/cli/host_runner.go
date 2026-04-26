@@ -301,11 +301,18 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	if err != nil {
 		return vm.RuntimeAssets{}, err
 	}
+	guestTrust, err := guestTrustAssetsForConfig(cfg)
+	if err != nil {
+		return vm.RuntimeAssets{}, err
+	}
 	var guestAssets image.GuestAgentAssets
 	if _, err := os.Stat(layout.RootfsPath); os.IsNotExist(err) {
 		pull := r.PullImage
 		if pull == nil {
-			puller := image.Puller{GuestInit: defaultGuestAgentAssets}
+			puller := image.Puller{
+				GuestInit:  defaultGuestAgentAssets,
+				GuestTrust: guestTrust,
+			}
 			pull = puller.PullAndCache
 		}
 		result, err := pull(ctx, cfg.ImageCacheDir, cfg.Image)
@@ -328,6 +335,9 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 		if _, err := image.EnsureGuestAgent(layout.RootfsPath, layout.AgentPath, guestAssets); err != nil {
 			return vm.RuntimeAssets{}, err
 		}
+	}
+	if err := image.InjectGuestTrust(layout.RootfsPath, guestTrust); err != nil {
+		return vm.RuntimeAssets{}, err
 	}
 	if err := r.prepareFeatures(layout.RootfsPath, cfg.Features); err != nil {
 		return vm.RuntimeAssets{}, err
@@ -378,6 +388,28 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 
 	cleanupOnError = false
 	return assets, nil
+}
+
+func guestTrustAssetsForConfig(cfg config.Config) (image.GuestTrustAssets, error) {
+	if !cfg.Network.MITM.Enabled || !cfg.Network.MITM.CA.InstallSystem {
+		return image.GuestTrustAssets{}, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return image.GuestTrustAssets{}, err
+	}
+	caDir := filepath.Join(home, ".local", "share", "keel", "ca")
+	ca, err := network.LoadOrCreateCA(network.CAOptions{
+		Dir:  caDir,
+		Name: cfg.Network.MITM.CA.Name,
+	})
+	if err != nil {
+		return image.GuestTrustAssets{}, err
+	}
+	return image.GuestTrustAssets{
+		Enabled:   true,
+		CACertPEM: ca.CertPEM,
+	}, nil
 }
 
 func (r HostRunner) syncWorkspace(req RunRequest, assets vm.RuntimeAssets) error {

@@ -224,6 +224,70 @@ func TestHostRunnerRefreshesCachedGuestAgentWhenDigestChanges(t *testing.T) {
 	}
 }
 
+func TestHostRunnerInjectsMITMGuestTrustAssets(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for guest trust tests")
+	}
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		t.Skip("debugfs is required for guest trust tests")
+	}
+
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	cfg.Network.MITM.Enabled = true
+	cfg.Network.MITM.CA.Name = "keel-local-ca"
+	cfg.Network.MITM.CA.InstallSystem = true
+
+	oldHome := os.Getenv("HOME")
+	t.Setenv("HOME", tempDir)
+	_ = oldHome
+
+	layout, err := image.ResolveCacheLayout(tempDir, cfg.Image)
+	if err != nil {
+		t.Fatalf("ResolveCacheLayout() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(layout.RootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if _, err := image.CreateRootfsImage(image.CreateRootfsOptions{
+		SourceDir: t.TempDir(),
+		ImagePath: layout.RootfsPath,
+		SizeMB:    128,
+	}); err != nil {
+		t.Fatalf("CreateRootfsImage() error = %v", err)
+	}
+
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		GuestAssets: func() (image.GuestAgentAssets, error) {
+			return image.GuestAgentAssets{}, nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got := debugfsReadCLI(t, layout.RootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt"); got == "" {
+		t.Fatal("expected injected mitm trust certificate")
+	}
+	if got := debugfsReadCLI(t, layout.RootfsPath, "/etc/keel/install-ca.sh"); !strings.Contains(got, "update-ca-certificates") {
+		t.Fatalf("install-ca.sh content = %q", got)
+	}
+}
+
 func TestHostRunnerAppliesConfiguredFeaturesBeforeLaunch(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := config.Default()
@@ -653,3 +717,17 @@ func (v *stubHypervisorVM) VSockListen(port uint32) (net.Listener, error) {
 }
 
 var _ hypervisor.VM = (*stubHypervisorVM)(nil)
+
+func debugfsReadCLI(t *testing.T, imagePath, target string) string {
+	t.Helper()
+	cmd := exec.Command("debugfs", "-R", "cat "+target, imagePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("debugfs read %s error = %v: %s", target, err, output)
+	}
+	text := string(output)
+	if lines := strings.SplitN(text, "\n", 2); len(lines) == 2 && strings.HasPrefix(lines[0], "debugfs ") {
+		return lines[1]
+	}
+	return text
+}
