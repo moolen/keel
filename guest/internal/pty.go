@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/creack/pty"
@@ -35,7 +37,11 @@ func ServePTY(command []string, cwd string, env []string) error {
 	}
 	defer conn.Close()
 
-	cmd := exec.Command(command[0], command[1:]...)
+	commandPath, err := resolveCommandPath(command[0], env)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(commandPath, command[1:]...)
 	cmd.Dir = cwd
 	cmd.Env = env
 
@@ -192,4 +198,31 @@ func isClosedConn(err error) bool {
 		return false
 	}
 	return err == net.ErrClosed || errors.Is(err, io.EOF)
+}
+
+func resolveCommandPath(name string, env []string) (string, error) {
+	if strings.ContainsRune(name, os.PathSeparator) {
+		return name, nil
+	}
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "PATH=") {
+			continue
+		}
+		for _, dir := range filepath.SplitList(strings.TrimPrefix(entry, "PATH=")) {
+			if dir == "" {
+				continue
+			}
+			candidate := filepath.Join(dir, name)
+			info, err := os.Stat(candidate)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			if info.Mode()&0o111 == 0 {
+				continue
+			}
+			return candidate, nil
+		}
+		break
+	}
+	return "", exec.ErrNotFound
 }

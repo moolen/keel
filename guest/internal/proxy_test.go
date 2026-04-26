@@ -21,6 +21,9 @@ func TestProxyEnvironmentSetsLocalProxyVariables(t *testing.T) {
 	if got, want := values["NO_PROXY"], "127.0.0.1,localhost"; got != want {
 		t.Fatalf("NO_PROXY = %q, want %q", got, want)
 	}
+	if got, want := values["DOCKER_CONFIG"], "/etc/docker/client"; got != want {
+		t.Fatalf("DOCKER_CONFIG = %q, want %q", got, want)
+	}
 	if got, want := values["TERM"], "xterm-256color"; got != want {
 		t.Fatalf("TERM = %q, want %q", got, want)
 	}
@@ -28,6 +31,13 @@ func TestProxyEnvironmentSetsLocalProxyVariables(t *testing.T) {
 
 func TestProxyEnvironmentAddsDefaultPath(t *testing.T) {
 	values := envMap(proxyEnvironment(nil))
+	if got, want := values["PATH"], "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"; got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
+	}
+}
+
+func TestProxyEnvironmentReplacesEmptyPath(t *testing.T) {
+	values := envMap(proxyEnvironment([]string{"PATH="}))
 	if got, want := values["PATH"], "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"; got != want {
 		t.Fatalf("PATH = %q, want %q", got, want)
 	}

@@ -1,12 +1,21 @@
 package features
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
+)
+
+const (
+	dockerBridgeCIDR = "172.17.0.1/16"
+	dockerProxyURL   = "http://172.17.0.1:3128"
 )
 
 type ConfiguredFeature struct {
@@ -20,12 +29,15 @@ type DockerConfig struct {
 }
 
 type Runner struct {
-	LookupPath   func(string) (string, error)
-	Stat         func(string) (os.FileInfo, error)
-	MkdirAll     func(string, os.FileMode) error
-	WriteFile    func(string, []byte, os.FileMode) error
-	StartProcess func(context.Context, string, []string, []string, string) error
-	WaitForFile  func(string) error
+	LookupPath    func(string) (string, error)
+	Stat          func(string) (os.FileInfo, error)
+	MkdirAll      func(string, os.FileMode) error
+	WriteFile     func(string, []byte, os.FileMode) error
+	Remove        func(string) error
+	RemoveAll     func(string) error
+	StartProcess  func(context.Context, string, []string, []string, string) error
+	WaitForFile   func(string) error
+	WaitForDaemon func([]string) error
 }
 
 func (r Runner) RunConfigured(ctx context.Context, configured []ConfiguredFeature, env []string) error {
@@ -70,7 +82,7 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if mkdirAll == nil {
 		mkdirAll = os.MkdirAll
 	}
-	for _, dir := range []string{"/etc/docker", "/var/lib/docker", "/var/run"} {
+	for _, dir := range []string{"/etc/docker", "/etc/docker/client", "/var/lib/docker", "/var/run"} {
 		if err := mkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -80,7 +92,7 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 		"storage-driver":   cfg.StorageDriver,
 		"registry-mirrors": cfg.RegistryMirrors,
 		"iptables":         false,
-		"bridge":           "none",
+		"bip":              dockerBridgeCIDR,
 		"ip-forward":       false,
 		"ip-masq":          false,
 		"userland-proxy":   false,
@@ -97,6 +109,41 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if err := writeFile("/etc/docker/daemon.json", body, 0o644); err != nil {
 		return err
 	}
+	clientConfig, err := json.Marshal(map[string]any{
+		"proxies": map[string]any{
+			"default": map[string]string{
+				"httpProxy":  dockerProxyURL,
+				"httpsProxy": dockerProxyURL,
+				"noProxy":    "127.0.0.1,localhost,::1,172.17.0.1",
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeFile("/etc/docker/client/config.json", clientConfig, 0o644); err != nil {
+		return err
+	}
+	remove := r.Remove
+	if remove == nil {
+		remove = os.Remove
+	}
+	removeAll := r.RemoveAll
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
+	if err := removeAll("/var/run/docker"); err != nil {
+		return err
+	}
+	if err := mkdirAll("/var/run/docker", 0o755); err != nil {
+		return err
+	}
+	if err := remove("/var/run/docker.sock"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := remove("/var/run/docker.pid"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 
 	startProcess := r.StartProcess
 	if startProcess == nil {
@@ -110,7 +157,14 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if waitForFile == nil {
 		waitForFile = waitForSocket
 	}
-	return waitForFile("/var/run/docker.sock")
+	if err := waitForFile("/var/run/docker.sock"); err != nil {
+		return err
+	}
+	waitForDaemon := r.WaitForDaemon
+	if waitForDaemon == nil {
+		waitForDaemon = waitForDockerDaemon
+	}
+	return waitForDaemon(env)
 }
 
 func startGuestProcess(ctx context.Context, name string, args []string, env []string, dir string) error {
@@ -131,6 +185,47 @@ func waitForSocket(path string) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("docker socket %s did not appear", path)
+}
+
+func waitForDockerDaemon(env []string) error {
+	_ = env
+	for range 50 {
+		if err := dockerDaemonReady("/var/run/docker.sock"); err == nil {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("docker daemon did not become ready")
+}
+
+func dockerDaemonReady(socketPath string) error {
+	conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		return err
+	}
+	if _, err := conn.Write([]byte("GET /_ping HTTP/1.0\r\nHost: docker\r\n\r\n")); err != nil {
+		return err
+	}
+	reader := bufio.NewReader(conn)
+	status, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(status, "200") {
+		return fmt.Errorf("unexpected docker ping status: %s", strings.TrimSpace(status))
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(string(body), "OK") {
+		return fmt.Errorf("unexpected docker ping body: %q", string(body))
+	}
+	return nil
 }
 
 func findBinary(lookupPath func(string) (string, error), stat func(string) (os.FileInfo, error), name string, candidates []string) (string, error) {

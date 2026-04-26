@@ -10,11 +10,14 @@ import (
 
 func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 	tempDir := t.TempDir()
-	var wrotePath string
-	var wroteBody []byte
+	writes := map[string]string{}
 	var startedName string
 	var startedArgs []string
 	var startedEnv []string
+	var waitedForDaemon bool
+	var daemonEnv []string
+	var removedPaths []string
+	var removedAllPaths []string
 
 	runner := Runner{
 		LookupPath: func(file string) (string, error) {
@@ -24,8 +27,15 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 			return nil
 		},
 		WriteFile: func(path string, data []byte, _ os.FileMode) error {
-			wrotePath = path
-			wroteBody = append([]byte(nil), data...)
+			writes[path] = string(append([]byte(nil), data...))
+			return nil
+		},
+		Remove: func(path string) error {
+			removedPaths = append(removedPaths, path)
+			return nil
+		},
+		RemoveAll: func(path string) error {
+			removedAllPaths = append(removedAllPaths, path)
 			return nil
 		},
 		StartProcess: func(_ context.Context, name string, args []string, env []string, dir string) error {
@@ -43,6 +53,11 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 			}
 			return nil
 		},
+		WaitForDaemon: func(env []string) error {
+			waitedForDaemon = true
+			daemonEnv = append([]string(nil), env...)
+			return nil
+		},
 	}
 
 	err := runner.RunConfigured(context.Background(), []ConfiguredFeature{{
@@ -51,18 +66,27 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 			"storage_driver":   "vfs",
 			"registry_mirrors": []any{"https://mirror.gcr.io"},
 		},
-	}}, []string{"HTTPS_PROXY=http://127.0.0.1:3128", "PATH=" + tempDir})
+	}}, []string{"HTTPS_PROXY=http://127.0.0.1:3128", "DOCKER_CONFIG=/etc/docker/client", "PATH=" + tempDir})
 	if err != nil {
 		t.Fatalf("RunConfigured() error = %v", err)
 	}
 
-	if wrotePath != "/etc/docker/daemon.json" {
-		t.Fatalf("WriteFile path = %q, want /etc/docker/daemon.json", wrotePath)
+	if _, ok := writes["/etc/docker/daemon.json"]; !ok {
+		t.Fatalf("daemon config was not written: %#v", writes)
 	}
-	text := string(wroteBody)
-	for _, want := range []string{`"storage-driver":"vfs"`, `"https://mirror.gcr.io"`, `"iptables":false`, `"bridge":"none"`, `"userland-proxy":false`} {
+	text := writes["/etc/docker/daemon.json"]
+	for _, want := range []string{`"storage-driver":"vfs"`, `"https://mirror.gcr.io"`, `"iptables":false`, `"ip-forward":false`, `"ip-masq":false`, `"bip":"172.17.0.1/16"`, `"userland-proxy":false`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("daemon.json missing %q in %s", want, text)
+		}
+	}
+	if strings.Contains(text, `"bridge":"`) {
+		t.Fatalf("daemon.json should not set explicit bridge device: %s", text)
+	}
+	clientConfig := writes["/etc/docker/client/config.json"]
+	for _, want := range []string{`"httpProxy":"http://172.17.0.1:3128"`, `"httpsProxy":"http://172.17.0.1:3128"`, `"noProxy":"127.0.0.1,localhost,::1,172.17.0.1"`} {
+		if !strings.Contains(clientConfig, want) {
+			t.Fatalf("client config missing %q in %s", want, clientConfig)
 		}
 	}
 	if startedName != "/usr/local/bin/dockerd" {
@@ -73,6 +97,24 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 	}
 	if !containsEnv(startedEnv, "HTTPS_PROXY=http://127.0.0.1:3128") {
 		t.Fatalf("StartProcess env missing proxy: %#v", startedEnv)
+	}
+	if !containsEnv(startedEnv, "DOCKER_CONFIG=/etc/docker/client") {
+		t.Fatalf("StartProcess env missing DOCKER_CONFIG: %#v", startedEnv)
+	}
+	if !containsEnv(daemonEnv, "DOCKER_CONFIG=/etc/docker/client") {
+		t.Fatalf("WaitForDaemon env missing DOCKER_CONFIG: %#v", daemonEnv)
+	}
+	if !containsEnv(daemonEnv, "PATH="+tempDir) {
+		t.Fatalf("WaitForDaemon env missing PATH override: %#v", daemonEnv)
+	}
+	if !reflect.DeepEqual(removedPaths, []string{"/var/run/docker.sock", "/var/run/docker.pid"}) {
+		t.Fatalf("Remove paths = %#v, want docker socket and pid cleanup", removedPaths)
+	}
+	if !reflect.DeepEqual(removedAllPaths, []string{"/var/run/docker"}) {
+		t.Fatalf("RemoveAll paths = %#v, want docker runtime dir cleanup", removedAllPaths)
+	}
+	if !waitedForDaemon {
+		t.Fatal("expected WaitForDaemon to be called")
 	}
 }
 

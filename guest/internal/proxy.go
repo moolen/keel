@@ -230,11 +230,17 @@ func proxyEnvironment(base []string) []string {
 	}
 	for _, entry := range base {
 		key := entry
+		value := ""
 		if idx := strings.IndexByte(entry, '='); idx >= 0 {
 			key = entry[:idx]
+			value = entry[idx+1:]
 		}
 		if key == "PATH" {
-			hasPath = true
+			if value != "" {
+				hasPath = true
+				env = append(env, entry)
+			}
+			continue
 		}
 		if _, drop := skip[key]; drop {
 			continue
@@ -253,6 +259,7 @@ func proxyEnvironment(base []string) []string {
 		"https_proxy="+proxyURL,
 		"NO_PROXY=127.0.0.1,localhost",
 		"no_proxy=127.0.0.1,localhost",
+		"DOCKER_CONFIG=/etc/docker/client",
 	)
 	return env
 }
