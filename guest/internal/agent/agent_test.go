@@ -132,6 +132,16 @@ func TestCoreMountsIncludesCgroup2(t *testing.T) {
 	t.Fatalf("coreMounts() = %#v, want cgroup2 mount", mounts)
 }
 
+func TestCoreMountsIncludesTmpfsForTmp(t *testing.T) {
+	mounts := coreMounts()
+	for _, mount := range mounts {
+		if mount.target == "/tmp" && mount.fstype == "tmpfs" && mount.data == "mode=1777,nosuid,nodev" {
+			return
+		}
+	}
+	t.Fatalf("coreMounts() = %#v, want tmp tmpfs mount", mounts)
+}
+
 func TestParseKernelCommandLineParsesProcessConfig(t *testing.T) {
 	cmdline := "console=ttyS0 keel.process=eyJ1aWQiOjEwMDAsImdpZCI6MTAwMSwic3VwcGxlbWVudGFyeV9naWRzIjpbMjcsNDRdfQ"
 

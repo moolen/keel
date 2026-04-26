@@ -187,7 +187,7 @@ func applyBootManifest(cfg *bootConfig, manifest pkgboot.Manifest) {
 }
 
 func mountCoreFilesystems() error {
-	for _, dir := range []string{"/proc", "/sys", "/sys/fs/cgroup", "/dev", "/dev/pts", "/run"} {
+	for _, dir := range []string{"/proc", "/sys", "/sys/fs/cgroup", "/dev", "/dev/pts", "/run", "/tmp"} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -218,6 +218,7 @@ func coreMounts() []coreMount {
 		{"cgroup2", "/sys/fs/cgroup", "cgroup2", 0, ""},
 		{"devtmpfs", "/dev", "devtmpfs", 0, "mode=0755"},
 		{"devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666,mode=0620"},
+		{"tmpfs", "/tmp", "tmpfs", 0, "mode=1777,nosuid,nodev"},
 	}
 }
 

@@ -49,6 +49,9 @@ func ServePTY(command []string, cwd string, env []string, process *ProcessConfig
 
 	commandPath, err := resolveCommandPath(command[0], env)
 	if err != nil {
+		if writeErr := writeStartupFailure(conn, command, err); writeErr != nil && !isClosedConn(writeErr) {
+			return writeErr
+		}
 		return err
 	}
 	cmd := exec.Command(commandPath, command[1:]...)
@@ -58,6 +61,9 @@ func ServePTY(command []string, cwd string, env []string, process *ProcessConfig
 
 	ptyFile, err := pty.Start(cmd)
 	if err != nil {
+		if writeErr := writeStartupFailure(conn, command, err); writeErr != nil && !isClosedConn(writeErr) {
+			return writeErr
+		}
 		return err
 	}
 	defer func() {
@@ -215,6 +221,41 @@ func writeDataFrame(w io.Writer, data []byte) error {
 func writeExitFrame(w io.Writer, code byte) error {
 	_, err := w.Write([]byte{messageExit, code})
 	return err
+}
+
+func writeStartupFailure(w io.Writer, command []string, err error) error {
+	message := formatStartupError(command, err)
+	if message != "" {
+		if writeErr := writeDataFrame(w, []byte(message)); writeErr != nil {
+			return writeErr
+		}
+	}
+	return writeExitFrame(w, startupExitCode(err))
+}
+
+func formatStartupError(command []string, err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		name := "command"
+		if len(command) > 0 && command[0] != "" {
+			name = command[0]
+		}
+		return fmt.Sprintf("%s: command not found\n", name)
+	}
+	text := err.Error()
+	if strings.HasSuffix(text, "\n") {
+		return text
+	}
+	return text + "\n"
+}
+
+func startupExitCode(err error) byte {
+	if errors.Is(err, exec.ErrNotFound) {
+		return 127
+	}
+	return 1
 }
 
 func exitCode(err error) byte {
