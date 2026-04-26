@@ -39,6 +39,19 @@ type HostRunner struct {
 	MachineFactory    func(config.Config, vm.RuntimeAssets) machineRunner
 	PrepareFeatures   func(string, []config.FeatureConfig) error
 	ServiceStarter    func(context.Context, config.Config, vm.RuntimeAssets) (func(), *network.Summary, error)
+	ProgressFactory   func(io.Writer, int) (progressReporter, error)
+	ProgressEnabled   func(io.Writer) bool
+}
+
+const startupPhaseTotal = 10
+
+func startupPhase(index int, title, detail string) startupStep {
+	return startupStep{
+		Index:  index,
+		Total:  startupPhaseTotal,
+		Title:  title,
+		Detail: detail,
+	}
 }
 
 func (r HostRunner) runtimeDir() (string, error) {
@@ -49,16 +62,16 @@ func (r HostRunner) runtimeDir() (string, error) {
 }
 
 func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
-	cfg, err := r.runtimeConfig(req.Config)
-	if err != nil {
-		return err
-	}
 	if req.Config.DryRun {
+		cfg, err := r.runtimeConfig(req.Config)
+		if err != nil {
+			return err
+		}
 		out := req.Stdout
 		if out == nil {
 			out = io.Discard
 		}
-		_, err := fmt.Fprintf(out,
+		_, err = fmt.Fprintf(out,
 			"dry-run: image=%s workspace=%s target=%s command=%q\n",
 			cfg.Image,
 			cfg.Workspace.Mount,
@@ -68,7 +81,17 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		return err
 	}
 
-	assets, err := r.prepareAssets(ctx, cfg)
+	progress := r.newProgressReporter(req)
+	defer progress.Stop()
+
+	progress.Step(startupPhase(1, "resolving config", "merging runtime configuration"))
+	progress.Step(startupPhase(2, "resolving runtime env", "materializing env and feature config"))
+	cfg, err := r.runtimeConfig(req.Config)
+	if err != nil {
+		return err
+	}
+
+	assets, err := r.prepareAssets(ctx, cfg, progress)
 	if err != nil {
 		return err
 	}
@@ -82,6 +105,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		if startServices == nil {
 			startServices = r.startServices
 		}
+		progress.Step(startupPhase(9, "starting vm services", "starting dns and tcp policy proxies"))
 		stopServices, summary, err := startServices(ctx, cfg, assets)
 		if err != nil {
 			return err
@@ -89,6 +113,8 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		defer stopServices()
 		defer r.printNetworkSummary(req, summary)
 		machine := factory(cfg, assets)
+		progress.Step(startupPhase(10, "booting vm and attaching terminal", "handing off to guest process"))
+		progress.Stop()
 		runErr := machine.Run(ctx)
 		syncErr := r.syncWorkspace(req, assets)
 		switch {
@@ -102,7 +128,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	}
 
 	machine := vm.NewMachine(cfg, assets)
-	runErr := r.runPreparedVM(ctx, req, machine)
+	runErr := r.runPreparedVM(ctx, req, machine, progress)
 	syncErr := r.syncWorkspace(req, assets)
 	switch {
 	case runErr != nil && syncErr != nil:
@@ -114,13 +140,14 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	}
 }
 
-func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *vm.Machine) error {
+func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *vm.Machine, progress progressReporter) error {
 	instance, cleanup, err := machine.Prepare(ctx)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
+	progress.Step(startupPhase(9, "starting vm services", "starting dns and tcp policy proxies"))
 	stopServices, summary, err := r.startVMServices(ctx, req.Config, instance)
 	if err != nil {
 		return err
@@ -128,9 +155,11 @@ func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *
 	defer stopServices()
 	defer r.printNetworkSummary(req, summary)
 
+	progress.Step(startupPhase(10, "booting vm and attaching terminal", "handing off to guest process"))
 	if err := instance.Start(ctx); err != nil {
 		return err
 	}
+	progress.Stop()
 	if err := machine.AttachPTYToVM(ctx, instance); err != nil {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -138,6 +167,18 @@ func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *
 		return err
 	}
 	return instance.Wait(ctx)
+}
+
+func (r HostRunner) newProgressReporter(req RunRequest) progressReporter {
+	output := req.Stderr
+	if output == nil {
+		output = os.Stderr
+	}
+	return newStartupProgressReporter(output, startupPhaseTotal, startupProgressOptions{
+		DryRun:      req.Config.DryRun,
+		Interactive: r.ProgressEnabled,
+		Factory:     r.ProgressFactory,
+	})
 }
 
 func (r HostRunner) warnKernelNetworkLimitations(req RunRequest, assets vm.RuntimeAssets) {
@@ -269,12 +310,13 @@ func (r HostRunner) printNetworkSummary(req RunRequest, summary *network.Summary
 	_ = summary.WriteReport(stderr)
 }
 
-func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.RuntimeAssets, error) {
+func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progress progressReporter) (vm.RuntimeAssets, error) {
 	ensureKernel := r.EnsureKernel
 	if ensureKernel == nil {
 		manager := vm.KernelManager{}
 		ensureKernel = manager.Ensure
 	}
+	progress.Step(startupPhase(3, "ensuring kernel", "resolving guest kernel image"))
 	kernelPath, err := ensureKernel(ctx, cfg.Kernel.Path)
 	if err != nil {
 		return vm.RuntimeAssets{}, err
@@ -288,6 +330,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	if err != nil {
 		return vm.RuntimeAssets{}, err
 	}
+	progress.Step(startupPhase(4, "pulling oci image", "resolving cached rootfs and image layers"))
 	var guestAssets image.GuestAgentAssets
 	if _, err := os.Stat(layout.RootfsPath); os.IsNotExist(err) {
 		pull := r.PullImage
@@ -310,6 +353,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	if loadGuestAssets == nil {
 		loadGuestAssets = defaultGuestAgentAssets
 	}
+	progress.Step(startupPhase(5, "preparing guest assets", "injecting guest binaries, trust, and rootfs features"))
 	guestAssets, err = loadGuestAssets()
 	if err != nil {
 		guestAssets = image.GuestAgentAssets{}
@@ -356,6 +400,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	if preparer == nil {
 		preparer = workspace.PrepareImage
 	}
+	progress.Step(startupPhase(6, "preparing workspace image", "copying workspace into an ext4 snapshot"))
 	mountSource := cfg.Workspace.Mount
 	if mountSource == "" {
 		mountSource = "."
@@ -369,6 +414,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	}); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
+	progress.Step(startupPhase(7, "preparing extra volumes", "materializing additional writable and read-only volumes"))
 	volumes, err := r.prepareVolumes(cfg, runtimeDir)
 	if err != nil {
 		return vm.RuntimeAssets{}, err
@@ -379,6 +425,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 	if writeBootManifest == nil {
 		writeBootManifest = bootmeta.WriteImage
 	}
+	progress.Step(startupPhase(8, "writing boot metadata image", "packing command, env, process, and volume metadata"))
 	if err := writeBootManifest(assets.MetadataPath, assets.Manifest); err != nil {
 		return vm.RuntimeAssets{}, err
 	}

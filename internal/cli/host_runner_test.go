@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -199,7 +200,7 @@ func TestHostRunnerPreparesVolumeAndMetadataAssets(t *testing.T) {
 		PrepareFeatures: func(string, []config.FeatureConfig) error { return nil },
 	}
 
-	assets, err := runner.prepareAssets(context.Background(), cfg)
+	assets, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{})
 	if err != nil {
 		t.Fatalf("prepareAssets() error = %v", err)
 	}
@@ -872,6 +873,120 @@ func TestHostRunnerPrintsNetworkSummaryAfterShutdown(t *testing.T) {
 	}
 }
 
+func TestHostRunnerReportsStartupPhasesInOrderAndStopsBeforeMachineRun(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var events []string
+	reporter := &recordingProgressReporter{
+		onStep: func(step startupStep) { events = append(events, step.Title) },
+		onStop: func() { events = append(events, "progress-stop") },
+	}
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		ServiceStarter: func(context.Context, config.Config, vm.RuntimeAssets) (func(), *network.Summary, error) {
+			return func() {}, network.NewSummary(), nil
+		},
+		ProgressEnabled: func(io.Writer) bool { return true },
+		ProgressFactory: func(io.Writer, int) (progressReporter, error) { return reporter, nil },
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return machineRunnerFunc(func(context.Context) error {
+				events = append(events, "machine-run")
+				return nil
+			})
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}, Stderr: &bytes.Buffer{}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	wantPhases := []string{
+		"resolving config",
+		"resolving runtime env",
+		"ensuring kernel",
+		"pulling oci image",
+		"preparing guest assets",
+		"preparing workspace image",
+		"preparing extra volumes",
+		"writing boot metadata image",
+		"starting vm services",
+		"booting vm and attaching terminal",
+		"progress-stop",
+		"machine-run",
+	}
+	if !reflect.DeepEqual(events, wantPhases) {
+		t.Fatalf("events = %#v, want %#v", events, wantPhases)
+	}
+}
+
+func TestHostRunnerStopsProgressBeforeReturningStartupError(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var events []string
+	reporter := &recordingProgressReporter{
+		onStep: func(step startupStep) { events = append(events, step.Title) },
+		onStop: func() { events = append(events, "progress-stop") },
+	}
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		WorkspacePreparer: func(workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{}, errors.New("workspace exploded")
+		},
+		ProgressEnabled: func(io.Writer) bool { return true },
+		ProgressFactory: func(io.Writer, int) (progressReporter, error) { return reporter, nil },
+	}
+
+	err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}, Stderr: &bytes.Buffer{}})
+	if err == nil || !strings.Contains(err.Error(), "workspace exploded") {
+		t.Fatalf("Run() error = %v, want workspace error", err)
+	}
+	wantEvents := []string{
+		"resolving config",
+		"resolving runtime env",
+		"ensuring kernel",
+		"pulling oci image",
+		"preparing guest assets",
+		"preparing workspace image",
+		"progress-stop",
+	}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
 func TestHostRunnerReturnsSyncErrorAfterSuccessfulRun(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := config.Default()
@@ -938,6 +1053,29 @@ type stubMachineRunner struct{}
 
 func (stubMachineRunner) Run(context.Context) error {
 	return nil
+}
+
+type machineRunnerFunc func(context.Context) error
+
+func (f machineRunnerFunc) Run(ctx context.Context) error {
+	return f(ctx)
+}
+
+type recordingProgressReporter struct {
+	onStep func(startupStep)
+	onStop func()
+}
+
+func (r *recordingProgressReporter) Step(step startupStep) {
+	if r.onStep != nil {
+		r.onStep(step)
+	}
+}
+
+func (r *recordingProgressReporter) Stop() {
+	if r.onStop != nil {
+		r.onStop()
+	}
 }
 
 type stubHypervisorVM struct {

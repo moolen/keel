@@ -58,6 +58,8 @@ Run a shell in the default VM image:
 keel -- /bin/sh
 ```
 
+On interactive terminals, Keel shows a compact startup indicator while it resolves the image, prepares the workspace and volumes, writes boot metadata, and starts the VM. The loader clears itself before guest output attaches, so the shell or command output still starts cleanly.
+
 Run a single command:
 
 ```bash
