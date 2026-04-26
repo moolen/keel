@@ -13,16 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
 var caMu sync.Mutex
-
-const (
-	fileLockPollInterval = 10 * time.Millisecond
-	fileLockTimeout      = 5 * time.Second
-	fileLockStaleAfter   = 30 * time.Second
-)
 
 type CAOptions struct {
 	Dir  string
@@ -40,6 +35,12 @@ type CA struct {
 type IssuedCert struct {
 	CertPEM []byte
 	KeyPEM  []byte
+}
+
+type fileLock struct {
+	file *os.File
+	mu   sync.Mutex
+	done bool
 }
 
 func LoadOrCreateCA(opts CAOptions) (*CA, error) {
@@ -412,31 +413,47 @@ func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
 }
 
 func withFileLock(lockPath string, fn func() error) error {
-	deadline := time.Now().Add(fileLockTimeout)
-	for {
-		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			lockFile.Close()
-			defer os.Remove(lockPath)
-			return fn()
-		}
-		if !os.IsExist(err) {
-			return err
-		}
-
-		info, statErr := os.Stat(lockPath)
-		if statErr == nil && time.Since(info.ModTime()) > fileLockStaleAfter {
-			if err := os.Remove(lockPath); err == nil || os.IsNotExist(err) {
-				continue
-			}
-		}
-		if statErr != nil && os.IsNotExist(statErr) {
-			continue
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("acquire file lock %s: timeout", lockPath)
-		}
-
-		time.Sleep(fileLockPollInterval)
+	lock, err := acquireFileLock(lockPath)
+	if err != nil {
+		return err
 	}
+	defer lock.Unlock()
+
+	return fn()
+}
+
+func acquireFileLock(lockPath string) (*fileLock, error) {
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+
+	return &fileLock{file: file}, nil
+}
+
+func (l *fileLock) Unlock() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.done {
+		return nil
+	}
+
+	if err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN); err != nil {
+		_ = l.file.Close()
+		l.done = true
+		return err
+	}
+	if err := l.file.Close(); err != nil {
+		l.done = true
+		return err
+	}
+
+	l.done = true
+	return nil
 }

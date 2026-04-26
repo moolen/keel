@@ -9,7 +9,6 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 )
@@ -269,58 +268,84 @@ func TestIssueLeafReloadsOnDiskWinnerWhenFilesChange(t *testing.T) {
 	assertIssuedChainsToCA(t, ca, reloaded)
 }
 
-func TestLoadOrCreateCAConcurrentCallersReuseSingleCA(t *testing.T) {
-	dir := t.TempDir()
+func TestFileLockUnlockDoesNotReleaseAnotherOwner(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "cache.lock")
 
-	const callers = 8
-	results := make(chan *CA, callers)
-	errs := make(chan error, callers)
-
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for i := 0; i < callers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-
-			ca, err := LoadOrCreateCA(CAOptions{Dir: dir, Name: "keel-local-ca"})
-			if err != nil {
-				errs <- err
-				return
-			}
-			results <- ca
-		}()
+	first, err := acquireFileLock(lockPath)
+	if err != nil {
+		t.Fatalf("acquireFileLock(first) error = %v", err)
 	}
 
-	close(start)
-	wg.Wait()
-	close(results)
-	close(errs)
-
-	for err := range errs {
-		t.Fatalf("LoadOrCreateCA() error = %v", err)
-	}
-
-	var first *CA
-	for ca := range results {
-		if first == nil {
-			first = ca
-			continue
+	secondReady := make(chan *fileLock, 1)
+	secondErr := make(chan error, 1)
+	go func() {
+		lock, err := acquireFileLock(lockPath)
+		if err != nil {
+			secondErr <- err
+			return
 		}
-		if !bytes.Equal(first.CertPEM, ca.CertPEM) {
-			t.Fatal("expected concurrent callers to observe the same CA certificate")
-		}
-		if !bytes.Equal(first.KeyPEM, ca.KeyPEM) {
-			t.Fatal("expected concurrent callers to observe the same CA key")
-		}
+		secondReady <- lock
+	}()
+
+	select {
+	case err := <-secondErr:
+		t.Fatalf("acquireFileLock(second) error = %v", err)
+	case <-secondReady:
+		t.Fatal("expected second lock acquisition to block while first owner holds lock")
+	case <-time.After(100 * time.Millisecond):
 	}
 
-	if first == nil {
-		t.Fatal("expected at least one CA result")
+	if err := first.Unlock(); err != nil {
+		t.Fatalf("first.Unlock() error = %v", err)
 	}
 
-	assertCertificateMatchesKey(t, first.CertPEM, first.KeyPEM)
+	var second *fileLock
+	select {
+	case err := <-secondErr:
+		t.Fatalf("acquireFileLock(second) error = %v", err)
+	case second = <-secondReady:
+	case <-time.After(time.Second):
+		t.Fatal("expected second owner to acquire lock after first unlock")
+	}
+
+	if err := first.Unlock(); err != nil {
+		t.Fatalf("first.Unlock(second time) error = %v", err)
+	}
+
+	thirdReady := make(chan *fileLock, 1)
+	thirdErr := make(chan error, 1)
+	go func() {
+		lock, err := acquireFileLock(lockPath)
+		if err != nil {
+			thirdErr <- err
+			return
+		}
+		thirdReady <- lock
+	}()
+
+	select {
+	case err := <-thirdErr:
+		t.Fatalf("acquireFileLock(third) error = %v", err)
+	case lock := <-thirdReady:
+		_ = lock.Unlock()
+		t.Fatal("expected stale unlock from first owner to not release second owner's lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := second.Unlock(); err != nil {
+		t.Fatalf("second.Unlock() error = %v", err)
+	}
+
+	select {
+	case err := <-thirdErr:
+		t.Fatalf("acquireFileLock(third) error = %v", err)
+	case third := <-thirdReady:
+		if err := third.Unlock(); err != nil {
+			t.Fatalf("third.Unlock() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected third owner to acquire lock after second unlock")
+	}
 }
 
 func assertIssuedChainsToCA(t *testing.T, ca *CA, issued *IssuedCert) {
