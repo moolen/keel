@@ -41,7 +41,9 @@ func (c Client) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 	writer := &frameWriter{writer: conn}
 
 	restore, err := makeRaw(stdin)

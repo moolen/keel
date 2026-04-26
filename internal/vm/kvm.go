@@ -30,7 +30,7 @@ func (h kvmAccessHelper) ensure() error {
 	}
 	file, err := open("/dev/kvm")
 	if err == nil {
-		file.Close()
+		_ = file.Close()
 		return nil
 	}
 	if !os.IsPermission(err) {

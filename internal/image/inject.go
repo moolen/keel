@@ -40,7 +40,9 @@ func InjectGuestAgent(rootfsPath string, assets GuestAgentAssets) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		_ = os.RemoveAll(tempDir)
+	}()
 
 	binaryPath := filepath.Join(tempDir, "keel-agent")
 	if err := os.WriteFile(binaryPath, assets.Binary, 0o755); err != nil {
@@ -75,7 +77,9 @@ func InjectGuestTrust(rootfsPath string, assets GuestTrustAssets) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		_ = os.RemoveAll(tempDir)
+	}()
 
 	certPath := filepath.Join(tempDir, "keel-local-ca.crt")
 	if err := os.WriteFile(certPath, assets.CACertPEM, 0o644); err != nil {
@@ -192,7 +196,9 @@ func appendPEMToExt4FileIfPresent(rootfsPath, targetPath string, data []byte) er
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		_ = os.RemoveAll(tempDir)
+	}()
 
 	combined := append(append(bytes.TrimRight(existing, "\n"), '\n'), data...)
 	if len(combined) == 0 || combined[len(combined)-1] != '\n' {
@@ -239,7 +245,9 @@ func debugfsReadFile(rootfsPath, target string) ([]byte, error) {
 		_ = os.Remove(tempPath)
 		return nil, err
 	}
-	defer os.Remove(tempPath)
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
 
 	cmd := exec.Command("debugfs", "-R", fmt.Sprintf("dump %s %s", target, tempPath), rootfsPath)
 	output, err := cmd.CombinedOutput()

@@ -56,7 +56,9 @@ func forwardDNSQuery(ctx context.Context, payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	if err := writeDNSPacket(conn, payload); err != nil {
 		return nil, err

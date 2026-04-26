@@ -91,7 +91,9 @@ func (p DNSProxy) Serve(ctx context.Context, vsockPath string) error {
 }
 
 func (p DNSProxy) ServeListener(ctx context.Context, listener net.Listener) error {
-	defer listener.Close()
+	defer func() {
+		_ = listener.Close()
+	}()
 
 	go func() {
 		<-ctx.Done()
@@ -107,7 +109,9 @@ func (p DNSProxy) ServeListener(ctx context.Context, listener net.Listener) erro
 			return err
 		}
 		go func() {
-			defer conn.Close()
+			defer func() {
+				_ = conn.Close()
+			}()
 			_ = p.handleConn(ctx, conn)
 		}()
 	}

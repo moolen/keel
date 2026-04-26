@@ -53,7 +53,9 @@ func StartTCPProxy(ctx context.Context) error {
 				return
 			}
 			go func() {
-				defer conn.Close()
+				defer func() {
+					_ = conn.Close()
+				}()
 				log.Printf("tcp proxy accepted %s", conn.RemoteAddr())
 				if err := handleProxyConn(ctx, conn); err != nil && ctx.Err() == nil {
 					log.Printf("tcp proxy connection error: %v", err)
@@ -72,7 +74,9 @@ func handleProxyConn(ctx context.Context, client net.Conn) error {
 		if err != nil {
 			return err
 		}
-		defer upstream.Close()
+		defer func() {
+			_ = upstream.Close()
+		}()
 		return bridgeGuestProxy(client, upstream)
 	} else if err != nil {
 		log.Printf("tcp proxy original destination unavailable: %v", err)
@@ -93,7 +97,9 @@ func handleProxyConn(ctx context.Context, client net.Conn) error {
 	if err != nil {
 		return err
 	}
-	defer upstream.Close()
+	defer func() {
+		_ = upstream.Close()
+	}()
 
 	if connect {
 		if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {

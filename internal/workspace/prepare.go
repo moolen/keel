@@ -39,7 +39,9 @@ func PrepareImage(opts PrepareOptions) (PrepareResult, error) {
 	if err != nil {
 		return PrepareResult{}, err
 	}
-	defer os.RemoveAll(stagedDir)
+	defer func() {
+		_ = os.RemoveAll(stagedDir)
+	}()
 
 	if err := os.MkdirAll(filepath.Dir(opts.ImagePath), 0o755); err != nil {
 		return PrepareResult{}, err
@@ -119,7 +121,7 @@ func snapshotDirectory(source string) (string, error) {
 		}
 	})
 	if err != nil {
-		os.RemoveAll(stageDir)
+		_ = os.RemoveAll(stageDir)
 		return "", err
 	}
 	return stageDir, nil
@@ -133,13 +135,17 @@ func copyFile(source, target string, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() {
+		_ = src.Close()
+	}()
 
 	dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
+	defer func() {
+		_ = dst.Close()
+	}()
 
 	if _, err := io.Copy(dst, src); os.IsNotExist(err) {
 		return nil

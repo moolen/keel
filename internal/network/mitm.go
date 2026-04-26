@@ -151,7 +151,7 @@ func (p *MITMProxy) roundTrip(ctx context.Context, req *http.Request, upstreamAd
 		return nil, nil, err
 	}
 
-	var upstreamConn net.Conn = upstream
+	upstreamConn := net.Conn(upstream)
 	if upstreamTLS {
 		tlsConfig := cloneTLSConfig(p.TLSClientConfig)
 		name := normalizeHTTPHost(serverName)

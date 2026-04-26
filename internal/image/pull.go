@@ -64,7 +64,9 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 	if err != nil {
 		return PullResult{}, err
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		_ = os.RemoveAll(tempDir)
+	}()
 
 	if err := extractFilesystem(mutate.Extract(img), tempDir); err != nil {
 		return PullResult{}, err
@@ -169,7 +171,9 @@ func describeRemoteImageError(err error) string {
 }
 
 func extractFilesystem(reader io.ReadCloser, dst string) error {
-	defer reader.Close()
+	defer func() {
+		_ = reader.Close()
+	}()
 
 	tr := tar.NewReader(reader)
 	for {
@@ -191,7 +195,7 @@ func extractFilesystem(reader io.ReadCloser, dst string) error {
 			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
@@ -200,7 +204,7 @@ func extractFilesystem(reader io.ReadCloser, dst string) error {
 				return err
 			}
 			if _, err := io.Copy(file, tr); err != nil {
-				file.Close()
+				_ = file.Close()
 				return err
 			}
 			if err := file.Close(); err != nil {

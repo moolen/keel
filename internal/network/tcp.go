@@ -41,7 +41,9 @@ func (p TCPProxy) Serve(ctx context.Context, vsockPath string) error {
 }
 
 func (p TCPProxy) ServeListener(ctx context.Context, listener net.Listener) error {
-	defer listener.Close()
+	defer func() {
+		_ = listener.Close()
+	}()
 
 	go func() {
 		<-ctx.Done()
@@ -65,7 +67,9 @@ func (p TCPProxy) ServeListener(ctx context.Context, listener net.Listener) erro
 }
 
 func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	destination, err := readDestinationHeader(conn)
 	if err != nil {
@@ -130,7 +134,9 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	defer upstream.Close()
+	defer func() {
+		_ = upstream.Close()
+	}()
 
 	if len(preface) > 0 {
 		if _, err := upstream.Write(preface); err != nil {

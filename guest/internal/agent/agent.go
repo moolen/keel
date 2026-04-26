@@ -191,7 +191,7 @@ func attachConsole() error {
 	}
 	for _, target := range []int{0, 1, 2} {
 		if err := syscall.Dup2(fd, target); err != nil {
-			syscall.Close(fd)
+			_ = syscall.Close(fd)
 			return err
 		}
 	}

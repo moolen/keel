@@ -88,7 +88,9 @@ func testImage(t *testing.T, files map[string]string) v1.Image {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	layer, err := tarball.LayerFromReader(bytes.NewReader(buf.Bytes()))
+	layer, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(buf.Bytes())), nil
+	})
 	if err != nil {
 		t.Fatalf("LayerFromReader() error = %v", err)
 	}

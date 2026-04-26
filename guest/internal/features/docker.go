@@ -219,7 +219,9 @@ func dockerDaemonReady(socketPath string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 	if err := conn.SetDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
 		return err
 	}

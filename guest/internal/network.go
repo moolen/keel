@@ -23,7 +23,9 @@ func ensureLoopbackUpWith(ops linkOps) error {
 	if err != nil {
 		return err
 	}
-	defer ops.close(fd)
+	defer func() {
+		_ = ops.close(fd)
+	}()
 
 	ifr, err := ops.newIfreq("lo")
 	if err != nil {

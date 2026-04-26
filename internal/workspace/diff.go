@@ -87,7 +87,9 @@ func hashFile(path string) ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("open %s: %w", path, err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {

@@ -29,13 +29,17 @@ func ServePTY(command []string, cwd string, env []string) error {
 	if err != nil {
 		return err
 	}
-	defer listener.Close()
+	defer func() {
+		_ = listener.Close()
+	}()
 
 	conn, err := listener.Accept()
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	commandPath, err := resolveCommandPath(command[0], env)
 	if err != nil {
@@ -49,7 +53,9 @@ func ServePTY(command []string, cwd string, env []string) error {
 	if err != nil {
 		return err
 	}
-	defer ptyFile.Close()
+	defer func() {
+		_ = ptyFile.Close()
+	}()
 
 	readErr := make(chan error, 1)
 	writeErr := make(chan error, 1)

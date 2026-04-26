@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -123,7 +124,9 @@ func (m KernelManager) findLatestKernelKey(ctx context.Context, ciVersion, arch 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("list kernels: unexpected status %s", resp.Status)
 	}
@@ -164,7 +167,9 @@ func (m KernelManager) download(ctx context.Context, url, destPath string) error
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download kernel: unexpected status %s", resp.Status)
 	}
@@ -172,7 +177,9 @@ func (m KernelManager) download(ctx context.Context, url, destPath string) error
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 	if _, err := io.Copy(file, resp.Body); err != nil {
 		return err
 	}
@@ -222,7 +229,9 @@ func dottedPart(parts []string, index int) int {
 	if index >= len(parts) {
 		return 0
 	}
-	var value int
-	fmt.Sscanf(parts[index], "%d", &value)
+	value, err := strconv.Atoi(parts[index])
+	if err != nil {
+		return 0
+	}
 	return value
 }

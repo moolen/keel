@@ -417,7 +417,9 @@ func withFileLock(lockPath string, fn func() error) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Unlock()
+	defer func() {
+		_ = lock.Unlock()
+	}()
 
 	return fn()
 }

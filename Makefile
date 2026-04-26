@@ -1,9 +1,13 @@
-GO ?= /usr/lib/go-1.24/bin/go
+GO ?= go
 
-.PHONY: test build guest-agent kernel
+.PHONY: test lint build guest-agent kernel
 
 test:
 	$(GO) test ./...
+
+lint:
+	golangci-lint run ./...
+	cd guest && golangci-lint run ./...
 
 build:
 	$(GO) build ./cmd/keel

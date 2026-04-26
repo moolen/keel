@@ -223,8 +223,13 @@ func dialVSock(ctx context.Context, socketPath string, port uint32) (net.Conn, e
 		return nil, err
 	}
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
-		defer conn.SetDeadline(time.Time{})
+		if err := conn.SetDeadline(deadline); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		defer func() {
+			_ = conn.SetDeadline(time.Time{})
+		}()
 	}
 	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", port); err != nil {
 		_ = conn.Close()

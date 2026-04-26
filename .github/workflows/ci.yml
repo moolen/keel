@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOLANGCI_LINT_VERSION: v2.11.4
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Host tests
+        run: go test ./...
+      - name: Guest tests
+        run: cd guest && go test ./...
+      - name: Build keel
+        run: go build ./cmd/keel
+      - name: Build guest agent
+        run: cd guest && go build ./cmd/keel-agent
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install golangci-lint
+        run: curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+      - name: Lint
+        run: |
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+          golangci-lint run ./...
+          cd guest && golangci-lint run ./...

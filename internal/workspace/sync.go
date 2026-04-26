@@ -110,7 +110,7 @@ func mountImageReadOnly(imagePath string) (string, func(), error) {
 	}
 	cmd := exec.Command("sudo", "mount", "-o", "loop,ro", imagePath, mountDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		os.RemoveAll(mountDir)
+		_ = os.RemoveAll(mountDir)
 		return "", nil, fmt.Errorf("mount workspace image: %w: %s", err, output)
 	}
 	cleanup := func() {
