@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 
@@ -18,6 +19,17 @@ func main() {
 	})
 	if err := cmd.Execute(); err != nil {
 		log.Print(err)
-		os.Exit(1)
+		os.Exit(exitCodeForError(err))
 	}
+}
+
+func exitCodeForError(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 1
 }

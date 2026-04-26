@@ -16,6 +16,18 @@ import (
 	"golang.org/x/term"
 )
 
+type ExitCodeError struct {
+	code int
+}
+
+func (e ExitCodeError) Error() string {
+	return fmt.Sprintf("command exited with code %d", e.code)
+}
+
+func (e ExitCodeError) ExitCode() int {
+	return e.code
+}
+
 type Client struct {
 	SocketPath    string
 	Stdin         *os.File
@@ -98,7 +110,7 @@ func (c Client) Run(ctx context.Context) error {
 			if frame.Code == 0 {
 				return nil
 			}
-			return fmt.Errorf("command exited with code %d", frame.Code)
+			return ExitCodeError{code: int(frame.Code)}
 		}
 	}
 }

@@ -105,3 +105,42 @@ func TestClientForwardsHostSignalsToGuest(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 }
+
+func TestClientReturnsExitCodeError(t *testing.T) {
+	stdin, err := os.CreateTemp(t.TempDir(), "stdin-*")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	defer stdin.Close()
+
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- vsock.WriteExitFrame(client, 42)
+	}()
+
+	err = (Client{
+		SocketPath: "ignored",
+		Stdin:      stdin,
+		Stdout:     &bytes.Buffer{},
+		Dial: func(context.Context, string, uint32) (net.Conn, error) {
+			return server, nil
+		},
+	}).Run(context.Background())
+	if writeErr := <-done; writeErr != nil {
+		t.Fatalf("WriteExitFrame() error = %v", writeErr)
+	}
+	if err == nil {
+		t.Fatal("Run() error = nil, want exit status error")
+	}
+	var exitErr interface{ ExitCode() int }
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Run() error = %T, want error with ExitCode", err)
+	}
+	if got, want := exitErr.ExitCode(), 42; got != want {
+		t.Fatalf("ExitCode() = %d, want %d", got, want)
+	}
+}

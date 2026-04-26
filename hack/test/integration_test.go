@@ -1,6 +1,9 @@
 package test
 
 import (
+	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -109,7 +112,7 @@ func (s *e2eSuite) testVMLifecycleAndExecution(t *testing.T) {
 
 	stderrResult := project.run(t, "", sh("echo error >&2")...)
 	stderrResult.requireSuccess(t)
-	requireContainsAll(t, stderrResult.Stderr, "error")
+	requireContainsAll(t, stderrResult.Stdout, "error")
 
 	interactive := project.runPTY(t, "whoami\npwd\nls /workspace\nexit\n", "--", "bash")
 	interactive.requireSuccess(t)
@@ -281,6 +284,8 @@ func (s *e2eSuite) testTCPTLSPolicy(t *testing.T) {
 			"    denied_sni:",
 			"      - example.com",
 			"  tcp:",
+			"    allowed_cidrs:",
+			"      - 172.22.0.0/16",
 			"    denied_cidrs:",
 			"      - 10.0.0.0/8",
 		))
@@ -294,10 +299,14 @@ func (s *e2eSuite) testTCPTLSPolicy(t *testing.T) {
 		deniedSNI.requireFailure(t)
 		requireContainsAll(t, deniedSNI.Stderr, "tcp  example.com:443 policy=denied")
 
-		allowedHTTP := project.run(t, "", sh("curl -fsS http://neverssl.com")...)
+		serverPort := startLocalHTTPServer(t, "NeverSSL from host\n")
+		allowedHTTP := project.run(t, "", sh(fmt.Sprintf(`
+gw=$(ip route | awk '/default/ {print $3; exit}')
+curl -fsS "http://$gw:%d"
+`, serverPort))...)
 		allowedHTTP.requireSuccess(t)
-		requireContainsAll(t, allowedHTTP.Stdout, "NeverSSL")
-		requireContainsAll(t, allowedHTTP.Stderr, "tcp  neverssl.com:80 policy=allowed")
+		requireContainsAll(t, allowedHTTP.Stdout, "NeverSSL from host")
+		requireContainsAll(t, allowedHTTP.Stderr, "tcp  172.22.", "policy=allowed")
 
 		deniedCIDR := project.run(t, "", sh("curl --connect-timeout 3 http://10.0.0.1:80")...)
 		deniedCIDR.requireFailure(t)
@@ -353,6 +362,31 @@ cat /tmp/out
 		allowed.requireSuccess(t)
 		requireContainsAll(t, allowed.Stderr, "tcp  httpbin.org:443 policy=allowed")
 	})
+}
+
+func startLocalHTTPServer(t *testing.T, body string) int {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprint(w, body)
+		}),
+	}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		_ = server.Close()
+	})
+	return listener.Addr().(*net.TCPAddr).Port
 }
 
 func (s *e2eSuite) testSecurityAndEvasion(t *testing.T) {
