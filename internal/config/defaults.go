@@ -43,6 +43,15 @@ func Default() Config {
 				AllowedSNI: []string{},
 				DeniedSNI:  []string{},
 			},
+			MITM: MITMConfig{
+				Bypass: MITMBypassConfig{
+					Hosts: []string{},
+					SNI:   []string{},
+				},
+			},
+			HTTP: HTTPConfig{
+				Rules: []HTTPRuleConfig{},
+			},
 		},
 		Env: map[string]string{
 			"TERM": "xterm-256color",

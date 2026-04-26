@@ -35,12 +35,14 @@ type WorkspaceConfig struct {
 }
 
 type NetworkConfig struct {
-	Mode         string    `yaml:"mode"`
-	DenyIfNoSNI  bool      `yaml:"deny_if_no_sni"`
-	DNS          DNSConfig `yaml:"dns"`
-	TCP          TCPConfig `yaml:"tcp"`
-	TLS          TLSConfig `yaml:"tls"`
-	LogDecisions bool      `yaml:"-"`
+	Mode         string     `yaml:"mode"`
+	DenyIfNoSNI  bool       `yaml:"deny_if_no_sni"`
+	DNS          DNSConfig  `yaml:"dns"`
+	TCP          TCPConfig  `yaml:"tcp"`
+	TLS          TLSConfig  `yaml:"tls"`
+	MITM         MITMConfig `yaml:"mitm"`
+	HTTP         HTTPConfig `yaml:"http"`
+	LogDecisions bool       `yaml:"-"`
 }
 
 type DNSConfig struct {
@@ -56,6 +58,38 @@ type TCPConfig struct {
 type TLSConfig struct {
 	AllowedSNI []string `yaml:"allowed_sni"`
 	DeniedSNI  []string `yaml:"denied_sni"`
+}
+
+type MITMConfig struct {
+	Enabled         bool             `yaml:"enabled"`
+	Mode            string           `yaml:"mode"`
+	OnUntrustedCert string           `yaml:"on_untrusted_cert"`
+	LogRequests     bool             `yaml:"log_requests"`
+	CA              MITMCAConfig     `yaml:"ca"`
+	Bypass          MITMBypassConfig `yaml:"bypass"`
+}
+
+type MITMCAConfig struct {
+	Name          string `yaml:"name"`
+	InstallSystem bool   `yaml:"install_system"`
+	InstallDocker bool   `yaml:"install_docker"`
+}
+
+type MITMBypassConfig struct {
+	Hosts []string `yaml:"hosts"`
+	SNI   []string `yaml:"sni"`
+}
+
+type HTTPConfig struct {
+	Default string           `yaml:"default"`
+	Rules   []HTTPRuleConfig `yaml:"rules"`
+}
+
+type HTTPRuleConfig struct {
+	Action  string   `yaml:"action"`
+	Host    string   `yaml:"host"`
+	Methods []string `yaml:"methods"`
+	Paths   []string `yaml:"paths"`
 }
 
 type FeatureConfig struct {

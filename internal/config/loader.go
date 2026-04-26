@@ -157,6 +157,31 @@ func mergeConfig(dst *Config, src Config) {
 	if len(src.Network.TLS.DeniedSNI) > 0 {
 		dst.Network.TLS.DeniedSNI = append([]string(nil), src.Network.TLS.DeniedSNI...)
 	}
+	if src.Network.MITM.Mode != "" {
+		dst.Network.MITM.Mode = src.Network.MITM.Mode
+	}
+	dst.Network.MITM.Enabled = dst.Network.MITM.Enabled || src.Network.MITM.Enabled
+	if src.Network.MITM.OnUntrustedCert != "" {
+		dst.Network.MITM.OnUntrustedCert = src.Network.MITM.OnUntrustedCert
+	}
+	dst.Network.MITM.LogRequests = dst.Network.MITM.LogRequests || src.Network.MITM.LogRequests
+	if src.Network.MITM.CA.Name != "" {
+		dst.Network.MITM.CA.Name = src.Network.MITM.CA.Name
+	}
+	dst.Network.MITM.CA.InstallSystem = dst.Network.MITM.CA.InstallSystem || src.Network.MITM.CA.InstallSystem
+	dst.Network.MITM.CA.InstallDocker = dst.Network.MITM.CA.InstallDocker || src.Network.MITM.CA.InstallDocker
+	if len(src.Network.MITM.Bypass.Hosts) > 0 {
+		dst.Network.MITM.Bypass.Hosts = append([]string(nil), src.Network.MITM.Bypass.Hosts...)
+	}
+	if len(src.Network.MITM.Bypass.SNI) > 0 {
+		dst.Network.MITM.Bypass.SNI = append([]string(nil), src.Network.MITM.Bypass.SNI...)
+	}
+	if src.Network.HTTP.Default != "" {
+		dst.Network.HTTP.Default = src.Network.HTTP.Default
+	}
+	if len(src.Network.HTTP.Rules) > 0 {
+		dst.Network.HTTP.Rules = append([]HTTPRuleConfig(nil), src.Network.HTTP.Rules...)
+	}
 	if len(src.Features) > 0 {
 		dst.Features = append([]FeatureConfig(nil), src.Features...)
 	}

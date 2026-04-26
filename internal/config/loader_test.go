@@ -109,6 +109,59 @@ image_cache_dir: ~/.cache/custom-keel/images
 	}
 }
 
+func TestLoadParsesMITMAndHTTPPolicy(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalConfig := []byte(`
+network:
+  mitm:
+    enabled: true
+    mode: optional
+    on_untrusted_cert: deny
+    log_requests: true
+    ca:
+      name: keel-local-ca
+      install_system: true
+      install_docker: true
+`)
+	if err := os.WriteFile(filepath.Join(tmpHome, ".config", "keel", "config.yaml"), globalConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	projectConfig := []byte(`
+network:
+  http:
+    default: deny
+    rules:
+      - action: allow
+        host: api.github.com
+        methods: ["GET"]
+        paths: ["/repos/*"]
+`)
+	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), projectConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Network.MITM.Enabled {
+		t.Fatal("MITM should be enabled from global config")
+	}
+	if got, want := cfg.Network.HTTP.Default, "deny"; got != want {
+		t.Fatalf("HTTP default = %q, want %q", got, want)
+	}
+	if len(cfg.Network.HTTP.Rules) != 1 {
+		t.Fatalf("len(HTTP.Rules) = %d, want 1", len(cfg.Network.HTTP.Rules))
+	}
+}
+
 func TestApplyOverrides(t *testing.T) {
 	cfg := Default()
 	cfg.Image = "ubuntu:24.04"
