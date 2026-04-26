@@ -22,6 +22,7 @@ type PolicyConfig struct {
 	DNS         RuleSet
 	TCP         CIDRRuleSet
 	TLS         RuleSet
+	HTTP        HTTPPolicyConfig
 	DenyIfNoSNI bool
 }
 
