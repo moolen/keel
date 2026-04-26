@@ -4,10 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -113,5 +115,19 @@ func TestListCachedImages(t *testing.T) {
 	}
 	if images[0].Reference != "ghcr.io/moolen/keel:test" {
 		t.Fatalf("images[0].Reference = %q", images[0].Reference)
+	}
+}
+
+func TestDescribeRemoteImageErrorAddsAuthHint(t *testing.T) {
+	err := describeRemoteImageError(errors.New("UNAUTHORIZED: authentication required"))
+	if !strings.Contains(err, "docker login") {
+		t.Fatalf("error = %q, want docker login hint", err)
+	}
+}
+
+func TestDescribeRemoteImageErrorAddsNetworkHint(t *testing.T) {
+	err := describeRemoteImageError(errors.New("dial tcp: lookup registry.example.com: no such host"))
+	if !strings.Contains(err, "network connectivity") {
+		t.Fatalf("error = %q, want network hint", err)
 	}
 }

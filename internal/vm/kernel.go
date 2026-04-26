@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -188,9 +189,17 @@ func (m KernelManager) httpClient() *http.Client {
 func installedFirecrackerVersion(_ context.Context) (string, error) {
 	output, err := exec.Command("firecracker", "--version").CombinedOutput()
 	if err != nil {
+		if isExecNotFound(err) {
+			return "", fmt.Errorf("firecracker is not installed or not in PATH; install Firecracker and ensure the `firecracker` binary is available")
+		}
 		return "", fmt.Errorf("detect firecracker version: %w: %s", err, output)
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+func isExecNotFound(err error) bool {
+	var execErr *exec.Error
+	return errors.As(err, &execErr) && execErr.Err == exec.ErrNotFound
 }
 
 func compareDottedVersions(a, b string) int {

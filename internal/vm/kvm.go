@@ -34,6 +34,9 @@ func (h kvmAccessHelper) ensure() error {
 		return nil
 	}
 	if !os.IsPermission(err) {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("kvm unavailable: /dev/kvm is missing; enable hardware virtualization and KVM on the host")
+		}
 		return fmt.Errorf("kvm unavailable: %w", err)
 	}
 
@@ -42,12 +45,12 @@ func (h kvmAccessHelper) ensure() error {
 		fix = repairKVMAccess
 	}
 	if err := fix(); err != nil {
-		return fmt.Errorf("repair /dev/kvm access: %w", err)
+		return fmt.Errorf("repair /dev/kvm access: %w. Keel needs read/write access to /dev/kvm", err)
 	}
 
 	file, err = open("/dev/kvm")
 	if err != nil {
-		return fmt.Errorf("kvm unavailable after repair: %w", err)
+		return fmt.Errorf("kvm unavailable after repair: %w. verify that your user can open /dev/kvm", err)
 	}
 	return file.Close()
 }

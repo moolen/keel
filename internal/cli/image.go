@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -85,12 +86,16 @@ func defaultGuestAgentAssets() (image.GuestAgentAssets, error) {
 	if err != nil {
 		return image.GuestAgentAssets{}, err
 	}
+	return loadGuestAgentAssets(execPath, os.ReadFile)
+}
+
+func loadGuestAgentAssets(execPath string, readFile func(string) ([]byte, error)) (image.GuestAgentAssets, error) {
 	candidates := []string{
 		filepath.Join(filepath.Dir(execPath), "..", "dist", "keel-agent"),
 		filepath.Join(filepath.Dir(execPath), "dist", "keel-agent"),
 	}
 	for _, candidate := range candidates {
-		data, err := os.ReadFile(candidate)
+		data, err := readFile(candidate)
 		if err == nil {
 			return image.GuestAgentAssets{
 				Binary:     data,
@@ -101,7 +106,10 @@ func defaultGuestAgentAssets() (image.GuestAgentAssets, error) {
 			return image.GuestAgentAssets{}, err
 		}
 	}
-	return image.GuestAgentAssets{}, fmt.Errorf("guest agent binary not found in dist/keel-agent")
+	return image.GuestAgentAssets{}, fmt.Errorf(
+		"guest agent binary not found; looked in %s. build it with `make guest-agent` before pulling or running images",
+		strings.Join(candidates, ", "),
+	)
 }
 
 func loadCLIConfig(ctx context.Context, deps Dependencies) (config.Config, error) {

@@ -3,6 +3,7 @@ package image
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -137,9 +138,30 @@ func fetchRemoteImage(ctx context.Context, ref string) (v1.Image, error) {
 	}
 	img, err := remote.Image(parsedRef, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
-		return nil, fmt.Errorf("fetch remote image: %w", err)
+		return nil, fmt.Errorf("fetch remote image %q: %s", ref, describeRemoteImageError(err))
 	}
 	return img, nil
+}
+
+func describeRemoteImageError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err.Error()
+	}
+	text := err.Error()
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "unauthorized") ||
+		strings.Contains(lower, "authentication required") ||
+		strings.Contains(lower, "denied") ||
+		strings.Contains(lower, "401") {
+		return text + "; check that the image exists and run `docker login` for the registry if it is private"
+	}
+	if strings.Contains(lower, "no such host") || strings.Contains(lower, "dial tcp") || strings.Contains(lower, "tls handshake timeout") {
+		return text + "; check host network connectivity and registry DNS/TLS access"
+	}
+	return text
 }
 
 func extractFilesystem(reader io.ReadCloser, dst string) error {

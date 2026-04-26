@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -43,5 +44,20 @@ func TestImagePullCommandInvokesPuller(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "/tmp/keel-cache") {
 		t.Fatalf("unexpected output: %q", stdout.String())
+	}
+}
+
+func TestLoadGuestAgentAssetsReturnsBuildHint(t *testing.T) {
+	_, err := loadGuestAgentAssets("/tmp/keel/bin/keel", func(string) ([]byte, error) {
+		return nil, os.ErrNotExist
+	})
+	if err == nil {
+		t.Fatal("loadGuestAgentAssets() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "make guest-agent") {
+		t.Fatalf("error = %q, want build hint", err)
+	}
+	if !strings.Contains(err.Error(), "dist/keel-agent") {
+		t.Fatalf("error = %q, want searched path hint", err)
 	}
 }

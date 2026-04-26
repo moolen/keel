@@ -67,6 +67,20 @@ func TestKernelManagerRespectsExistingKernel(t *testing.T) {
 	}
 }
 
+func TestInstalledFirecrackerVersionReturnsInstallHintWhenMissing(t *testing.T) {
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", t.TempDir())
+	defer os.Setenv("PATH", originalPath)
+
+	_, err := installedFirecrackerVersion(context.Background())
+	if err == nil {
+		t.Fatal("installedFirecrackerVersion() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "not installed or not in PATH") {
+		t.Fatalf("error = %q, want install hint", err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

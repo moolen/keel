@@ -38,7 +38,18 @@ func TestEnsureKVMAccessReturnsFixError(t *testing.T) {
 	}
 
 	err := helper.ensure()
-	if err == nil || err.Error() != "repair /dev/kvm access: no sudo" {
+	if err == nil || err.Error() != "repair /dev/kvm access: no sudo. Keel needs read/write access to /dev/kvm" {
+		t.Fatalf("ensure() error = %v", err)
+	}
+}
+
+func TestEnsureKVMAccessReturnsMissingDeviceHint(t *testing.T) {
+	helper := kvmAccessHelper{
+		open: func(string) (*os.File, error) { return nil, os.ErrNotExist },
+	}
+
+	err := helper.ensure()
+	if err == nil || err.Error() != "kvm unavailable: /dev/kvm is missing; enable hardware virtualization and KVM on the host" {
 		t.Fatalf("ensure() error = %v", err)
 	}
 }
