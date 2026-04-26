@@ -2,7 +2,8 @@
 .tmp/
 bin/
 dist/
-keel
+/keel
+/guest/keel-agent
 cover.out
 *.img
 *.qcow2
