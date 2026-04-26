@@ -140,6 +140,43 @@ func TestRunConfiguredRejectsMissingDockerd(t *testing.T) {
 	}
 }
 
+func TestDockerFeatureWritesCACertWhenConfigured(t *testing.T) {
+	writes := map[string]string{}
+	runner := Runner{
+		LookupPath: func(file string) (string, error) {
+			return "/usr/local/bin/" + file, nil
+		},
+		MkdirAll: func(path string, _ os.FileMode) error {
+			return nil
+		},
+		WriteFile: func(path string, data []byte, _ os.FileMode) error {
+			writes[path] = string(append([]byte(nil), data...))
+			return nil
+		},
+		Remove:        func(string) error { return nil },
+		RemoveAll:     func(string) error { return nil },
+		StartProcess:  func(context.Context, string, []string, []string, string) error { return nil },
+		WaitForFile:   func(string) error { return nil },
+		WaitForDaemon: func([]string) error { return nil },
+	}
+
+	err := runner.RunConfigured(context.Background(), []ConfiguredFeature{{
+		Name: "docker",
+		Config: map[string]any{
+			"mitm_ca_pem": "-----BEGIN CERTIFICATE-----\ntrust\n-----END CERTIFICATE-----\n",
+		},
+	}}, []string{"PATH=/usr/bin"})
+	if err != nil {
+		t.Fatalf("RunConfigured() error = %v", err)
+	}
+	if got := writes["/etc/docker/certs.d/keel-mitm/ca.crt"]; !strings.Contains(got, "BEGIN CERTIFICATE") {
+		t.Fatalf("docker trust cert = %q", got)
+	}
+	if got := writes["/usr/local/share/ca-certificates/keel-local-ca.crt"]; !strings.Contains(got, "BEGIN CERTIFICATE") {
+		t.Fatalf("system trust cert = %q", got)
+	}
+}
+
 func containsEnv(env []string, want string) bool {
 	for _, entry := range env {
 		if entry == want {

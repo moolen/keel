@@ -26,6 +26,7 @@ type ConfiguredFeature struct {
 type DockerConfig struct {
 	StorageDriver   string   `json:"storage_driver"`
 	RegistryMirrors []string `json:"registry_mirrors"`
+	MITMCAPEM       string   `json:"mitm_ca_pem"`
 }
 
 type Runner struct {
@@ -87,6 +88,13 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 			return err
 		}
 	}
+	if strings.TrimSpace(cfg.MITMCAPEM) != "" {
+		for _, dir := range []string{"/etc/docker/certs.d/keel-mitm", "/usr/local", "/usr/local/share", "/usr/local/share/ca-certificates"} {
+			if err := mkdirAll(dir, 0o755); err != nil {
+				return err
+			}
+		}
+	}
 
 	daemonConfig := map[string]any{
 		"storage-driver":   cfg.StorageDriver,
@@ -123,6 +131,14 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	}
 	if err := writeFile("/etc/docker/client/config.json", clientConfig, 0o644); err != nil {
 		return err
+	}
+	if strings.TrimSpace(cfg.MITMCAPEM) != "" {
+		if err := writeFile("/etc/docker/certs.d/keel-mitm/ca.crt", []byte(cfg.MITMCAPEM), 0o644); err != nil {
+			return err
+		}
+		if err := writeFile("/usr/local/share/ca-certificates/keel-local-ca.crt", []byte(cfg.MITMCAPEM), 0o644); err != nil {
+			return err
+		}
 	}
 	remove := r.Remove
 	if remove == nil {
