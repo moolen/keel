@@ -92,16 +92,31 @@ func TestHostRunnerPreparesAssetsBeforeLaunch(t *testing.T) {
 }
 
 func TestHostRunnerReturnsWorkspacePrepareError(t *testing.T) {
+	tempDir := t.TempDir()
 	cfg := config.Default()
 	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
 
 	runner := HostRunner{
-		RuntimeDir: t.TempDir(),
+		RuntimeDir: tempDir,
 		EnsureKernel: func(context.Context, string) (string, error) {
-			return "/tmp/vmlinux", nil
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		PullImage: func(_ context.Context, cacheDir, ref string) (image.PullResult, error) {
+			rootfsPath := filepath.Join(cacheDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+			if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+				return image.PullResult{}, err
+			}
+			if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+				return image.PullResult{}, err
+			}
+			return image.PullResult{Layout: image.CacheLayout{RootfsPath: rootfsPath}}, nil
 		},
 		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
 			return workspace.PrepareResult{}, errors.New("boom")
+		},
+		GuestAssets: func() (image.GuestAgentAssets, error) {
+			return image.GuestAgentAssets{}, nil
 		},
 	}
 
