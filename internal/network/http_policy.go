@@ -2,6 +2,7 @@ package network
 
 import (
 	"fmt"
+	"net"
 	"path"
 	"strings"
 )
@@ -36,7 +37,7 @@ func NewHTTPPolicy(cfg HTTPPolicyConfig) *HTTPPolicy {
 }
 
 func (p *HTTPPolicy) Evaluate(req HTTPRequest) Decision {
-	req.Host = normalizeName(req.Host)
+	req.Host = normalizeHTTPHost(req.Host)
 	req.Method = strings.ToUpper(strings.TrimSpace(req.Method))
 	req.Path = normalizeHTTPPath(req.Path)
 
@@ -65,7 +66,7 @@ func matchHTTPRule(rule HTTPRule, req HTTPRequest) bool {
 }
 
 func matchHTTPHost(pattern string, host string) bool {
-	pattern = normalizeName(pattern)
+	pattern = normalizeHTTPHost(pattern)
 	if pattern == "" {
 		return true
 	}
@@ -100,9 +101,6 @@ func matchHTTPPath(patterns []string, reqPath string) bool {
 func matchHTTPPathPattern(pattern string, reqPath string) bool {
 	if pattern == "" {
 		return reqPath == "/"
-	}
-	if pattern == "*" {
-		return true
 	}
 
 	parts := strings.Split(pattern, "*")
@@ -153,4 +151,19 @@ func normalizeHTTPPath(value string) string {
 		return "/"
 	}
 	return cleaned
+}
+
+func normalizeHTTPHost(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	} else if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		value = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
+	}
+
+	return normalizeName(value)
 }
