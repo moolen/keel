@@ -356,7 +356,7 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 	progress.Step(startupPhase(5, "preparing guest assets", "injecting guest binaries, trust, and rootfs features"))
 	guestAssets, err = loadGuestAssets()
 	if err != nil {
-		guestAssets = image.GuestAgentAssets{}
+		return vm.RuntimeAssets{}, fmt.Errorf("load guest assets: %w", err)
 	}
 	if len(guestAssets.Binary) > 0 {
 		if _, err := image.EnsureGuestAgent(layout.RootfsPath, layout.AgentPath, guestAssets); err != nil {
