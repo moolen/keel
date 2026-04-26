@@ -20,7 +20,7 @@ func (s *Summary) RecordHTTP(host, method, path string, decision Decision) {
 	}
 
 	key := HTTPSummaryKey{
-		Host:    normalizeName(host),
+		Host:    normalizeHTTPHost(host),
 		Method:  strings.ToUpper(strings.TrimSpace(method)),
 		Path:    normalizeHTTPPath(path),
 		Allowed: decision.Allowed,
