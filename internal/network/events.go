@@ -30,5 +30,5 @@ func (l *EventLogger) Printf(protocol, format string, args ...any) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, _ = io.WriteString(l.writer, fmt.Sprintf("\n[keel:%s] %s\n", protocol, message))
+	_, _ = io.WriteString(l.writer, fmt.Sprintf("\r\x1b[2K[keel:%s] %s\n", protocol, message))
 }

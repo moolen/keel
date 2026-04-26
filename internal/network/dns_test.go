@@ -132,8 +132,8 @@ func TestDNSProxyLogsWouldDenyInAuditMode(t *testing.T) {
 	}
 
 	got := events.String()
-	if !strings.HasPrefix(got, "\n[keel:dns] ") {
-		t.Fatalf("events = %q, want newline-prefixed keel dns log", got)
+	if !strings.HasPrefix(got, "\r\x1b[2K[keel:dns] ") {
+		t.Fatalf("events = %q, want line-clearing keel dns log", got)
 	}
 	if !strings.Contains(got, "would_deny domain=gist.github.com answers=1 rule=gist.github.com reason=dns denied") {
 		t.Fatalf("events = %q, want would_deny audit log", got)

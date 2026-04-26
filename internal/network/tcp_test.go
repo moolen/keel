@@ -243,8 +243,8 @@ func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
 	}
 
 	got := events.String()
-	if !strings.HasPrefix(got, "\n[keel:tcp] ") {
-		t.Fatalf("events = %q, want newline-prefixed keel tcp log", got)
+	if !strings.HasPrefix(got, "\r\x1b[2K[keel:tcp] ") {
+		t.Fatalf("events = %q, want line-clearing keel tcp log", got)
 	}
 	if !strings.Contains(got, "would_deny destination=198.51.100.25:80 sni= rule=default reason=tcp destination not correlated") {
 		t.Fatalf("events = %q, want would_deny audit log", got)
