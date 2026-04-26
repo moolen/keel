@@ -38,13 +38,15 @@ func (m TapManager) Prepare(ctx context.Context) (*GuestNetwork, func(), error) 
 
 	run := m.run
 	commands := [][]string{
-		{"sudo", "sysctl", "-w", "net.ipv4.ip_forward=1"},
 		{"sudo", "ip", "tuntap", "add", "dev", network.TapName, "mode", "tap", "user", userName},
 		{"sudo", "ip", "addr", "add", network.HostCIDR, "dev", network.TapName},
 		{"sudo", "ip", "link", "set", "dev", network.TapName, "up"},
-		{"sudo", "iptables", "-w", "-A", "FORWARD", "-i", network.TapName, "-j", "ACCEPT"},
-		{"sudo", "iptables", "-w", "-A", "FORWARD", "-o", network.TapName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
-		{"sudo", "iptables", "-w", "-t", "nat", "-A", "POSTROUTING", "-s", network.SubnetCIDR, "!", "-d", network.SubnetCIDR, "-j", "MASQUERADE"},
+		{"sudo", "iptables", "-w", "-A", "INPUT", "-i", network.TapName, "-j", "DROP"},
+		{"sudo", "iptables", "-w", "-A", "FORWARD", "-i", network.TapName, "-j", "DROP"},
+		{"sudo", "iptables", "-w", "-A", "FORWARD", "-o", network.TapName, "-j", "DROP"},
+		{"sudo", "ip6tables", "-w", "-A", "INPUT", "-i", network.TapName, "-j", "DROP"},
+		{"sudo", "ip6tables", "-w", "-A", "FORWARD", "-i", network.TapName, "-j", "DROP"},
+		{"sudo", "ip6tables", "-w", "-A", "FORWARD", "-o", network.TapName, "-j", "DROP"},
 	}
 	for _, command := range commands {
 		if err := run(ctx, command[0], command[1:]...); err != nil {
@@ -54,9 +56,12 @@ func (m TapManager) Prepare(ctx context.Context) (*GuestNetwork, func(), error) 
 
 	cleanup := func() {
 		for _, command := range [][]string{
-			{"sudo", "iptables", "-w", "-t", "nat", "-D", "POSTROUTING", "-s", network.SubnetCIDR, "!", "-d", network.SubnetCIDR, "-j", "MASQUERADE"},
-			{"sudo", "iptables", "-w", "-D", "FORWARD", "-o", network.TapName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
-			{"sudo", "iptables", "-w", "-D", "FORWARD", "-i", network.TapName, "-j", "ACCEPT"},
+			{"sudo", "ip6tables", "-w", "-D", "FORWARD", "-o", network.TapName, "-j", "DROP"},
+			{"sudo", "ip6tables", "-w", "-D", "FORWARD", "-i", network.TapName, "-j", "DROP"},
+			{"sudo", "ip6tables", "-w", "-D", "INPUT", "-i", network.TapName, "-j", "DROP"},
+			{"sudo", "iptables", "-w", "-D", "FORWARD", "-o", network.TapName, "-j", "DROP"},
+			{"sudo", "iptables", "-w", "-D", "FORWARD", "-i", network.TapName, "-j", "DROP"},
+			{"sudo", "iptables", "-w", "-D", "INPUT", "-i", network.TapName, "-j", "DROP"},
 			{"sudo", "ip", "link", "delete", "dev", network.TapName},
 		} {
 			_ = run(context.Background(), command[0], command[1:]...)

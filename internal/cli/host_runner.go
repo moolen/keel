@@ -101,7 +101,7 @@ func (r HostRunner) warnKernelNetworkLimitations(req RunRequest, assets vm.Runti
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	_, _ = fmt.Fprintln(stderr, "warning: transparent tcp redirect is unavailable on the default kernel; using explicit proxy fallback for compatible clients until you provide a custom kernel with netfilter support")
+	_, _ = fmt.Fprintln(stderr, "warning: transparent tcp redirect is unavailable on the default kernel; direct tap egress remains blocked, so only proxy-aware clients will work until you provide a custom kernel with netfilter support")
 }
 
 func networkPolicyConfigured(cfg config.Config) bool {

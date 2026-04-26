@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestTapManagerPrepareConfiguresTapAndNAT(t *testing.T) {
+func TestTapManagerPrepareConfiguresTapWithDefaultDenyHostFirewall(t *testing.T) {
 	var commands []string
 	manager := TapManager{
 		Run: func(_ context.Context, name string, args ...string) error {
@@ -45,13 +45,15 @@ func TestTapManagerPrepareConfiguresTapAndNAT(t *testing.T) {
 	}
 
 	want := []string{
-		"sudo sysctl -w net.ipv4.ip_forward=1",
 		"sudo ip tuntap add dev keela1b2c3 mode tap user moritz",
 		"sudo ip addr add 172.22.178.193/30 dev keela1b2c3",
 		"sudo ip link set dev keela1b2c3 up",
-		"sudo iptables -w -A FORWARD -i keela1b2c3 -j ACCEPT",
-		"sudo iptables -w -A FORWARD -o keela1b2c3 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-		"sudo iptables -w -t nat -A POSTROUTING -s 172.22.178.192/30 ! -d 172.22.178.192/30 -j MASQUERADE",
+		"sudo iptables -w -A INPUT -i keela1b2c3 -j DROP",
+		"sudo iptables -w -A FORWARD -i keela1b2c3 -j DROP",
+		"sudo iptables -w -A FORWARD -o keela1b2c3 -j DROP",
+		"sudo ip6tables -w -A INPUT -i keela1b2c3 -j DROP",
+		"sudo ip6tables -w -A FORWARD -i keela1b2c3 -j DROP",
+		"sudo ip6tables -w -A FORWARD -o keela1b2c3 -j DROP",
 	}
 	if diff := compareCommands(want, commands); diff != "" {
 		t.Fatalf("Prepare() commands mismatch:\n%s", diff)
@@ -60,9 +62,12 @@ func TestTapManagerPrepareConfiguresTapAndNAT(t *testing.T) {
 	commands = nil
 	cleanup()
 	wantCleanup := []string{
-		"sudo iptables -w -t nat -D POSTROUTING -s 172.22.178.192/30 ! -d 172.22.178.192/30 -j MASQUERADE",
-		"sudo iptables -w -D FORWARD -o keela1b2c3 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-		"sudo iptables -w -D FORWARD -i keela1b2c3 -j ACCEPT",
+		"sudo ip6tables -w -D FORWARD -o keela1b2c3 -j DROP",
+		"sudo ip6tables -w -D FORWARD -i keela1b2c3 -j DROP",
+		"sudo ip6tables -w -D INPUT -i keela1b2c3 -j DROP",
+		"sudo iptables -w -D FORWARD -o keela1b2c3 -j DROP",
+		"sudo iptables -w -D FORWARD -i keela1b2c3 -j DROP",
+		"sudo iptables -w -D INPUT -i keela1b2c3 -j DROP",
 		"sudo ip link delete dev keela1b2c3",
 	}
 	if diff := compareCommands(wantCleanup, commands); diff != "" {
