@@ -15,15 +15,28 @@ workspace:
 network:
   mode: vsock
   deny_if_no_sni: false
+  mitm:
+    enabled: true
+    ca:
+      install_system: true
+      install_docker: true
   dns:
     allowed:
-      - "*.github.com"
+      - api.github.com
   tcp:
     allowed_cidrs: []
     denied_cidrs: []
   tls:
     allowed_sni:
-      - "*.github.com"
+      - api.github.com
+  http:
+    default: deny
+    rules:
+      - action: allow
+        host: api.github.com
+        methods: ["GET"]
+        paths:
+          - /repos/*
 
 features:
   - name: docker
@@ -32,4 +45,3 @@ features:
 
 env:
   TERM: xterm-256color
-
