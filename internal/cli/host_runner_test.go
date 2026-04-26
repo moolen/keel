@@ -340,6 +340,73 @@ func TestHostRunnerAppliesConfiguredFeaturesBeforeLaunch(t *testing.T) {
 	}
 }
 
+func TestHostRunnerRuntimeConfigInjectsDockerMITMCAPEM(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+
+	cfg := config.Default()
+	cfg.Network.MITM.Enabled = true
+	cfg.Network.MITM.CA.Name = "keel-local-ca"
+	cfg.Network.MITM.CA.InstallDocker = true
+	cfg.Features = []config.FeatureConfig{{
+		Name: "docker",
+		Config: map[string]any{
+			"storage_driver": "vfs",
+		},
+	}}
+
+	runner := HostRunner{}
+	runtimeCfg, err := runner.runtimeConfig(cfg)
+	if err != nil {
+		t.Fatalf("runtimeConfig() error = %v", err)
+	}
+	if len(runtimeCfg.Features) != 1 {
+		t.Fatalf("len(runtimeCfg.Features) = %d, want 1", len(runtimeCfg.Features))
+	}
+	value, ok := runtimeCfg.Features[0].Config["mitm_ca_pem"].(string)
+	if !ok || !strings.Contains(value, "BEGIN CERTIFICATE") {
+		t.Fatalf("mitm_ca_pem = %#v, want CA PEM string", runtimeCfg.Features[0].Config["mitm_ca_pem"])
+	}
+}
+
+func TestBuildNetworkServicesEnablesMITMProxy(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+
+	cfg := config.Default()
+	cfg.Network.MITM.Enabled = true
+	cfg.Network.MITM.CA.Name = "keel-local-ca"
+	cfg.Network.HTTP.Default = "deny"
+	cfg.Network.HTTP.Rules = []config.HTTPRuleConfig{{
+		Action:  "allow",
+		Host:    "api.github.com",
+		Methods: []string{"GET"},
+		Paths:   []string{"/repos/*"},
+	}}
+
+	_, tcpProxy, summary, err := buildNetworkServices(cfg)
+	if err != nil {
+		t.Fatalf("buildNetworkServices() error = %v", err)
+	}
+	if summary == nil {
+		t.Fatal("expected summary")
+	}
+	if tcpProxy.MITM == nil {
+		t.Fatal("expected MITM proxy to be enabled")
+	}
+	if tcpProxy.MITM.Policy == nil {
+		t.Fatal("expected HTTP policy on MITM proxy")
+	}
+	decision := tcpProxy.MITM.Policy.Evaluate(network.HTTPRequest{
+		Host:   "api.github.com",
+		Method: "GET",
+		Path:   "/repos/123",
+	})
+	if !decision.Allowed {
+		t.Fatalf("http policy decision = %#v, want allowed", decision)
+	}
+}
+
 func TestHostRunnerWarnsWhenUsingDefaultKernelWithNetworkPolicy(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := config.Default()

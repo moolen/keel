@@ -41,6 +41,10 @@ func (r HostRunner) runtimeDir() (string, error) {
 }
 
 func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
+	cfg, err := r.runtimeConfig(req.Config)
+	if err != nil {
+		return err
+	}
 	if req.Config.DryRun {
 		out := req.Stdout
 		if out == nil {
@@ -48,19 +52,20 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		}
 		_, err := fmt.Fprintf(out,
 			"dry-run: image=%s workspace=%s target=%s command=%q\n",
-			req.Config.Image,
-			req.Config.Workspace.Mount,
-			req.Config.Workspace.Target,
+			cfg.Image,
+			cfg.Workspace.Mount,
+			cfg.Workspace.Target,
 			req.Command,
 		)
 		return err
 	}
 
-	assets, err := r.prepareAssets(ctx, req.Config)
+	assets, err := r.prepareAssets(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer r.cleanupRuntimeAssets(assets)
+	req.Config = cfg
 	r.warnKernelNetworkLimitations(req, assets)
 	factory := r.MachineFactory
 	if factory != nil {
@@ -68,13 +73,13 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		if startServices == nil {
 			startServices = r.startServices
 		}
-		stopServices, summary, err := startServices(ctx, req.Config, assets)
+		stopServices, summary, err := startServices(ctx, cfg, assets)
 		if err != nil {
 			return err
 		}
 		defer stopServices()
 		defer r.printNetworkSummary(req, summary)
-		machine := factory(req.Config, assets)
+		machine := factory(cfg, assets)
 		runErr := machine.Run(ctx)
 		syncErr := r.syncWorkspace(req, assets)
 		switch {
@@ -87,7 +92,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		}
 	}
 
-	machine := vm.NewMachine(req.Config, assets)
+	machine := vm.NewMachine(cfg, assets)
 	runErr := r.runPreparedVM(ctx, req, machine)
 	syncErr := r.syncWorkspace(req, assets)
 	switch {
@@ -154,31 +159,10 @@ func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets
 	serviceCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 
-	tracker := network.NewTracker(60 * time.Second)
-	summary := network.NewSummary()
-	engine := network.NewPolicyEngine(network.PolicyConfig{
-		DNS: network.RuleSet{
-			Allowed: cfg.Network.DNS.Allowed,
-			Denied:  cfg.Network.DNS.Denied,
-		},
-		TCP: network.CIDRRuleSet{
-			Allowed: cfg.Network.TCP.AllowedCIDRs,
-			Denied:  cfg.Network.TCP.DeniedCIDRs,
-		},
-		TLS: network.RuleSet{
-			Allowed: cfg.Network.TLS.AllowedSNI,
-			Denied:  cfg.Network.TLS.DeniedSNI,
-		},
-		DenyIfNoSNI: cfg.Network.DenyIfNoSNI,
-	}, tracker)
-	dnsProxy := network.DNSProxy{
-		Policy:  engine,
-		Tracker: tracker,
-		Summary: summary,
-	}
-	tcpProxy := network.TCPProxy{
-		Policy:  engine,
-		Summary: summary,
+	dnsProxy, tcpProxy, summary, err := buildNetworkServices(cfg)
+	if err != nil {
+		cancel()
+		return nil, nil, err
 	}
 	go func() {
 		errCh <- dnsProxy.Serve(serviceCtx, assets.VSockPath)
@@ -220,31 +204,10 @@ func (r HostRunner) startVMServices(ctx context.Context, cfg config.Config, inst
 	serviceCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 2)
 
-	tracker := network.NewTracker(60 * time.Second)
-	summary := network.NewSummary()
-	engine := network.NewPolicyEngine(network.PolicyConfig{
-		DNS: network.RuleSet{
-			Allowed: cfg.Network.DNS.Allowed,
-			Denied:  cfg.Network.DNS.Denied,
-		},
-		TCP: network.CIDRRuleSet{
-			Allowed: cfg.Network.TCP.AllowedCIDRs,
-			Denied:  cfg.Network.TCP.DeniedCIDRs,
-		},
-		TLS: network.RuleSet{
-			Allowed: cfg.Network.TLS.AllowedSNI,
-			Denied:  cfg.Network.TLS.DeniedSNI,
-		},
-		DenyIfNoSNI: cfg.Network.DenyIfNoSNI,
-	}, tracker)
-	dnsProxy := network.DNSProxy{
-		Policy:  engine,
-		Tracker: tracker,
-		Summary: summary,
-	}
-	tcpProxy := network.TCPProxy{
-		Policy:  engine,
-		Summary: summary,
+	dnsProxy, tcpProxy, summary, err := buildNetworkServices(cfg)
+	if err != nil {
+		cancel()
+		return nil, nil, err
 	}
 
 	dnsListener, err := instance.VSockListen(3053)
@@ -394,15 +357,7 @@ func guestTrustAssetsForConfig(cfg config.Config) (image.GuestTrustAssets, error
 	if !cfg.Network.MITM.Enabled || !cfg.Network.MITM.CA.InstallSystem {
 		return image.GuestTrustAssets{}, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return image.GuestTrustAssets{}, err
-	}
-	caDir := filepath.Join(home, ".local", "share", "keel", "ca")
-	ca, err := network.LoadOrCreateCA(network.CAOptions{
-		Dir:  caDir,
-		Name: cfg.Network.MITM.CA.Name,
-	})
+	ca, err := loadMITMCA(cfg)
 	if err != nil {
 		return image.GuestTrustAssets{}, err
 	}
@@ -410,6 +365,116 @@ func guestTrustAssetsForConfig(cfg config.Config) (image.GuestTrustAssets, error
 		Enabled:   true,
 		CACertPEM: ca.CertPEM,
 	}, nil
+}
+
+func (r HostRunner) runtimeConfig(cfg config.Config) (config.Config, error) {
+	updated := cfg
+	features, err := runtimeFeatureConfig(cfg)
+	if err != nil {
+		return config.Config{}, err
+	}
+	updated.Features = features
+	return updated, nil
+}
+
+func runtimeFeatureConfig(cfg config.Config) ([]config.FeatureConfig, error) {
+	if len(cfg.Features) == 0 {
+		return nil, nil
+	}
+	features := append([]config.FeatureConfig(nil), cfg.Features...)
+	if !cfg.Network.MITM.Enabled || !cfg.Network.MITM.CA.InstallDocker {
+		return features, nil
+	}
+	ca, err := loadMITMCA(cfg)
+	if err != nil {
+		return nil, err
+	}
+	for i := range features {
+		if features[i].Name != "docker" {
+			continue
+		}
+		cloned := map[string]any{}
+		for key, value := range features[i].Config {
+			cloned[key] = value
+		}
+		cloned["mitm_ca_pem"] = string(ca.CertPEM)
+		features[i].Config = cloned
+	}
+	return features, nil
+}
+
+func buildNetworkServices(cfg config.Config) (network.DNSProxy, network.TCPProxy, *network.Summary, error) {
+	tracker := network.NewTracker(60 * time.Second)
+	summary := network.NewSummary()
+	httpPolicy := network.HTTPPolicyConfig{
+		Default: cfg.Network.HTTP.Default,
+		Rules:   httpRulesFromConfig(cfg.Network.HTTP.Rules),
+	}
+	engine := network.NewPolicyEngine(network.PolicyConfig{
+		DNS: network.RuleSet{
+			Allowed: cfg.Network.DNS.Allowed,
+			Denied:  cfg.Network.DNS.Denied,
+		},
+		TCP: network.CIDRRuleSet{
+			Allowed: cfg.Network.TCP.AllowedCIDRs,
+			Denied:  cfg.Network.TCP.DeniedCIDRs,
+		},
+		TLS: network.RuleSet{
+			Allowed: cfg.Network.TLS.AllowedSNI,
+			Denied:  cfg.Network.TLS.DeniedSNI,
+		},
+		HTTP:        httpPolicy,
+		DenyIfNoSNI: cfg.Network.DenyIfNoSNI,
+	}, tracker)
+	dnsProxy := network.DNSProxy{
+		Policy:  engine,
+		Tracker: tracker,
+		Summary: summary,
+	}
+	tcpProxy := network.TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+	}
+	if cfg.Network.MITM.Enabled {
+		ca, err := loadMITMCA(cfg)
+		if err != nil {
+			return network.DNSProxy{}, network.TCPProxy{}, nil, err
+		}
+		tcpProxy.MITM = &network.MITMProxy{
+			Enabled:     true,
+			BypassHosts: append([]string(nil), cfg.Network.MITM.Bypass.Hosts...),
+			BypassSNI:   append([]string(nil), cfg.Network.MITM.Bypass.SNI...),
+			CA:          ca,
+			Policy:      network.NewHTTPPolicy(httpPolicy),
+			Summary:     summary,
+		}
+	}
+	return dnsProxy, tcpProxy, summary, nil
+}
+
+func httpRulesFromConfig(items []config.HTTPRuleConfig) []network.HTTPRule {
+	rules := make([]network.HTTPRule, 0, len(items))
+	for _, item := range items {
+		rules = append(rules, network.HTTPRule{
+			Action:  item.Action,
+			Host:    item.Host,
+			Methods: append([]string(nil), item.Methods...),
+			Paths:   append([]string(nil), item.Paths...),
+		})
+	}
+	return rules
+}
+
+func loadMITMCA(cfg config.Config) (*network.CA, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	caDir := filepath.Join(home, ".local", "share", "keel", "ca")
+	return network.LoadOrCreateCA(network.CAOptions{
+		Dir:  caDir,
+		Name: cfg.Network.MITM.CA.Name,
+	})
 }
 
 func (r HostRunner) syncWorkspace(req RunRequest, assets vm.RuntimeAssets) error {
