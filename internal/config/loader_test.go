@@ -266,6 +266,15 @@ network:
 	if cfg.Network.MITM.LogRequests {
 		t.Fatal("MITM log_requests should be overridable to false in project config")
 	}
+	if got, want := cfg.Network.MITM.Mode, "required"; got != want {
+		t.Fatalf("MITM mode should remain inherited when omitted = %q, want %q", got, want)
+	}
+	if got, want := cfg.Network.MITM.OnUntrustedCert, "allow"; got != want {
+		t.Fatalf("MITM on_untrusted_cert should remain inherited when omitted = %q, want %q", got, want)
+	}
+	if got, want := cfg.Network.MITM.CA.Name, "keel-local-ca"; got != want {
+		t.Fatalf("MITM CA name should remain inherited when omitted = %q, want %q", got, want)
+	}
 	if cfg.Network.MITM.CA.InstallSystem || cfg.Network.MITM.CA.InstallDocker {
 		t.Fatalf("MITM CA flags should be overridable to false: %+v", cfg.Network.MITM.CA)
 	}
