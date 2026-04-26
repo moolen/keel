@@ -17,10 +17,14 @@ type summaryKey struct {
 type Summary struct {
 	mu     sync.Mutex
 	counts map[summaryKey]int
+	http   map[HTTPSummaryKey]int
 }
 
 func NewSummary() *Summary {
-	return &Summary{counts: map[summaryKey]int{}}
+	return &Summary{
+		counts: map[summaryKey]int{},
+		http:   map[HTTPSummaryKey]int{},
+	}
 }
 
 func (s *Summary) RecordDNS(host string, decision Decision) {
@@ -63,9 +67,16 @@ func (s *Summary) WriteReport(w io.Writer) error {
 			count:      count,
 		})
 	}
+	httpRows := make([]httpSummaryRow, 0, len(s.http))
+	for key, count := range s.http {
+		httpRows = append(httpRows, httpSummaryRow{
+			HTTPSummaryKey: key,
+			Count:          count,
+		})
+	}
 	s.mu.Unlock()
 
-	if len(rows) == 0 {
+	if len(rows) == 0 && len(httpRows) == 0 {
 		return nil
 	}
 
@@ -82,11 +93,48 @@ func (s *Summary) WriteReport(w io.Writer) error {
 		}
 		return left.policy < right.policy
 	})
+	sort.Slice(httpRows, func(i, j int) bool {
+		left, right := httpRows[i], httpRows[j]
+		if left.Host != right.Host {
+			return left.Host < right.Host
+		}
+		if left.Method != right.Method {
+			return left.Method < right.Method
+		}
+		if left.Path != right.Path {
+			return left.Path < right.Path
+		}
+		if left.Allowed != right.Allowed {
+			return left.Allowed && !right.Allowed
+		}
+		return false
+	})
 
 	if _, err := fmt.Fprintln(w, "Network summary:"); err != nil {
 		return err
 	}
+
 	for _, row := range rows {
+		if row.protocol != "dns" {
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "%-4s %s:%d policy=%s count=%d\n", row.protocol, row.host, row.port, row.policy, row.count); err != nil {
+			return err
+		}
+	}
+	for _, row := range httpRows {
+		policy := "denied"
+		if row.Allowed {
+			policy = "allowed"
+		}
+		if _, err := fmt.Fprintf(w, "http %s %s %s policy=%s count=%d\n", row.Host, row.Method, row.Path, policy, row.Count); err != nil {
+			return err
+		}
+	}
+	for _, row := range rows {
+		if row.protocol == "dns" {
+			continue
+		}
 		if _, err := fmt.Fprintf(w, "%-4s %s:%d policy=%s count=%d\n", row.protocol, row.host, row.port, row.policy, row.count); err != nil {
 			return err
 		}
