@@ -69,6 +69,9 @@ func TestBuildConfigUsesRuntimeAssets(t *testing.T) {
 	if len(fcCfg.Drives) != 2 {
 		t.Fatalf("len(Drives) = %d, want 2", len(fcCfg.Drives))
 	}
+	if len(fcCfg.ForwardSignals) != 0 {
+		t.Fatalf("ForwardSignals = %#v, want disabled signal forwarding", fcCfg.ForwardSignals)
+	}
 }
 
 func TestBuildConfigEncodesFeaturesInKernelArgs(t *testing.T) {

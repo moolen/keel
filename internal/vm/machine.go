@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
@@ -25,6 +26,8 @@ type RuntimeAssets struct {
 	SocketPath    string
 	VSockPath     string
 	LogPath       string
+	RuntimeDir    string
+	CleanupDir    bool
 	CID           uint32
 	Network       *GuestNetwork
 }
@@ -87,6 +90,7 @@ func (m *Machine) BuildConfig() (firecracker.Config, error) {
 		LogPath:         m.Assets.LogPath,
 		KernelImagePath: m.Assets.KernelPath,
 		KernelArgs:      m.kernelArgs(),
+		ForwardSignals:  []os.Signal{},
 		Drives:          []models.Drive{rootDrive, workspaceDrive},
 		VsockDevices: []firecracker.VsockDevice{
 			{
@@ -244,6 +248,7 @@ func (m *Machine) defaultFirecrackerMachine(ctx context.Context, cfg firecracker
 		WithStdout(stdout).
 		WithStderr(stderr).
 		Build(ctx)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return firecracker.NewMachine(ctx, cfg,
 		firecracker.WithProcessRunner(cmd),
 		firecracker.WithLogger(logrus.NewEntry(logrus.New())),

@@ -57,6 +57,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	if err != nil {
 		return err
 	}
+	defer r.cleanupRuntimeAssets(assets)
 	r.warnKernelNetworkLimitations(req, assets)
 	stopServices, err := r.startServices(ctx, req.Config, assets)
 	if err != nil {
@@ -209,6 +210,23 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 		return vm.RuntimeAssets{}, err
 	}
 	workspacePath := filepath.Join(runtimeDir, "workspace.ext4")
+	assets := vm.RuntimeAssets{
+		KernelPath:    kernelPath,
+		RootfsPath:    layout.RootfsPath,
+		WorkspacePath: workspacePath,
+		SocketPath:    filepath.Join(runtimeDir, "firecracker.sock"),
+		VSockPath:     filepath.Join(runtimeDir, "firecracker.vsock"),
+		LogPath:       filepath.Join(runtimeDir, "firecracker.log"),
+		RuntimeDir:    runtimeDir,
+		CleanupDir:    r.RuntimeDir == "",
+		CID:           52,
+	}
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError {
+			r.cleanupRuntimeAssets(assets)
+		}
+	}()
 
 	preparer := r.WorkspacePreparer
 	if preparer == nil {
@@ -228,15 +246,8 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config) (vm.Ru
 		return vm.RuntimeAssets{}, err
 	}
 
-	return vm.RuntimeAssets{
-		KernelPath:    kernelPath,
-		RootfsPath:    layout.RootfsPath,
-		WorkspacePath: workspacePath,
-		SocketPath:    filepath.Join(runtimeDir, "firecracker.sock"),
-		VSockPath:     filepath.Join(runtimeDir, "firecracker.vsock"),
-		LogPath:       filepath.Join(runtimeDir, "firecracker.log"),
-		CID:           52,
-	}, nil
+	cleanupOnError = false
+	return assets, nil
 }
 
 func (r HostRunner) syncWorkspace(req RunRequest, assets vm.RuntimeAssets) error {
@@ -294,4 +305,24 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (r HostRunner) cleanupRuntimeAssets(assets vm.RuntimeAssets) {
+	if assets.CleanupDir && assets.RuntimeDir != "" {
+		_ = os.RemoveAll(assets.RuntimeDir)
+		return
+	}
+	for _, path := range []string{
+		assets.WorkspacePath,
+		assets.SocketPath,
+		assets.VSockPath,
+		assets.VSockPath + "_3053",
+		assets.VSockPath + "_3128",
+		assets.LogPath,
+	} {
+		if path == "" {
+			continue
+		}
+		_ = os.RemoveAll(path)
+	}
 }

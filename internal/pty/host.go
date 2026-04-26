@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,12 +17,14 @@ import (
 )
 
 type Client struct {
-	SocketPath   string
-	Stdin        *os.File
-	Stdout       io.Writer
-	Dial         func(context.Context, string, uint32) (net.Conn, error)
-	RetryTimeout time.Duration
-	RetryDelay   time.Duration
+	SocketPath    string
+	Stdin         *os.File
+	Stdout        io.Writer
+	Dial          func(context.Context, string, uint32) (net.Conn, error)
+	NotifySignals func(chan<- os.Signal, ...os.Signal)
+	StopSignals   func(chan<- os.Signal)
+	RetryTimeout  time.Duration
+	RetryDelay    time.Duration
 }
 
 func (c Client) Run(ctx context.Context) error {
@@ -39,6 +42,7 @@ func (c Client) Run(ctx context.Context) error {
 		return err
 	}
 	defer conn.Close()
+	writer := &frameWriter{writer: conn}
 
 	restore, err := makeRaw(stdin)
 	if err != nil {
@@ -46,24 +50,37 @@ func (c Client) Run(ctx context.Context) error {
 	}
 	defer restore()
 
-	if err := sendResize(conn, stdin); err != nil && !isTerminal(stdin) {
+	if err := sendResize(writer, stdin); err != nil && !isTerminal(stdin) {
 		return err
 	}
 
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
+	signals := make(chan os.Signal, 4)
+	notifySignals := c.NotifySignals
+	if notifySignals == nil {
+		notifySignals = signal.Notify
+	}
+	stopSignals := c.StopSignals
+	if stopSignals == nil {
+		stopSignals = signal.Stop
+	}
+	notifySignals(signals, syscall.SIGWINCH, syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals(signals)
 
 	go func() {
-		for range winch {
-			_ = sendResize(conn, stdin)
+		for sig := range signals {
+			switch sig {
+			case syscall.SIGWINCH:
+				_ = sendResize(writer, stdin)
+			case syscall.SIGINT, syscall.SIGTERM:
+				_ = writer.writeSignalFrame(byte(sig.(syscall.Signal)))
+			}
 		}
 	}()
 	if isTerminal(stdin) {
-		winch <- syscall.SIGWINCH
+		signals <- syscall.SIGWINCH
 	}
 
-	go forwardInput(conn, stdin)
+	go forwardInput(writer, stdin)
 
 	for {
 		frame, err := vsock.ReadFrame(conn)
@@ -82,6 +99,29 @@ func (c Client) Run(ctx context.Context) error {
 			return fmt.Errorf("command exited with code %d", frame.Code)
 		}
 	}
+}
+
+type frameWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *frameWriter) writeDataFrame(data []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return vsock.WriteDataFrame(w.writer, data)
+}
+
+func (w *frameWriter) writeResizeFrame(rows, cols uint16) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return vsock.WriteResizeFrame(w.writer, rows, cols)
+}
+
+func (w *frameWriter) writeSignalFrame(sig byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return vsock.WriteSignalFrame(w.writer, sig)
 }
 
 func (c Client) dialPTY(ctx context.Context) (net.Conn, error) {
@@ -118,12 +158,12 @@ func (c Client) dialPTY(ctx context.Context) (net.Conn, error) {
 	}
 }
 
-func forwardInput(w io.Writer, stdin *os.File) {
+func forwardInput(w *frameWriter, stdin *os.File) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := stdin.Read(buf)
 		if n > 0 {
-			_ = vsock.WriteDataFrame(w, buf[:n])
+			_ = w.writeDataFrame(buf[:n])
 		}
 		if err != nil {
 			return
@@ -131,7 +171,7 @@ func forwardInput(w io.Writer, stdin *os.File) {
 	}
 }
 
-func sendResize(w io.Writer, file *os.File) error {
+func sendResize(w *frameWriter, file *os.File) error {
 	if !isTerminal(file) {
 		return nil
 	}
@@ -139,7 +179,7 @@ func sendResize(w io.Writer, file *os.File) error {
 	if err != nil {
 		return err
 	}
-	return vsock.WriteResizeFrame(w, uint16(height), uint16(width))
+	return w.writeResizeFrame(uint16(height), uint16(width))
 }
 
 func makeRaw(file *os.File) (func(), error) {

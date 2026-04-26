@@ -293,6 +293,96 @@ func TestHostRunnerAllocatesUniqueRuntimeDirByDefault(t *testing.T) {
 	}
 }
 
+func TestHostRunnerCleansUpEphemeralRuntimeDir(t *testing.T) {
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = t.TempDir()
+	cfg.Workspace.Mount = t.TempDir()
+
+	rootfsPath := filepath.Join(cfg.ImageCacheDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var runtimeDir string
+	runner := HostRunner{
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(t.TempDir(), "vmlinux"), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			runtimeDir = filepath.Dir(opts.ImagePath)
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if runtimeDir == "" {
+		t.Fatal("runtime dir should be captured")
+	}
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Fatalf("runtime dir %q should be removed, stat err=%v", runtimeDir, err)
+	}
+}
+
+func TestHostRunnerRemovesArtifactsFromExplicitRuntimeDir(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			if err := os.WriteFile(opts.ImagePath, []byte("workspace"), 0o644); err != nil {
+				return workspace.PrepareResult{}, err
+			}
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if _, err := os.Stat(tempDir); err != nil {
+		t.Fatalf("runtime dir %q should remain, stat err=%v", tempDir, err)
+	}
+	for _, artifact := range []string{
+		filepath.Join(tempDir, "workspace.ext4"),
+		filepath.Join(tempDir, "firecracker.sock"),
+		filepath.Join(tempDir, "firecracker.vsock"),
+		filepath.Join(tempDir, "firecracker.vsock_3053"),
+		filepath.Join(tempDir, "firecracker.vsock_3128"),
+		filepath.Join(tempDir, "firecracker.log"),
+	} {
+		if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+			t.Fatalf("artifact %q should be removed, stat err=%v", artifact, err)
+		}
+	}
+}
+
 func TestHostRunnerSyncsWorkspaceAfterCommandExit(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := config.Default()
