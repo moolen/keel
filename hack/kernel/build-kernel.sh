@@ -61,7 +61,8 @@ ARTIFACT_BASENAME=${ARTIFACT_BASENAME:-vmlinux}
 BASELINE_CONFIG=${BASELINE_CONFIG:-"$SCRIPT_DIR/firecracker-6.1-x86_64.config"}
 FRAGMENT_CONFIG=${FRAGMENT_CONFIG:-"$SCRIPT_DIR/keel-netfilter.fragment"}
 KERNEL_TARBALL=${KERNEL_TARBALL:-"$CACHE_DIR/linux-$KERNEL_VERSION.tar.xz"}
-KERNEL_TARBALL_URL=${KERNEL_TARBALL_URL:-"https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz"}
+  KERNEL_TARBALL_URL=${KERNEL_TARBALL_URL:-"https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz"}
+KERNEL_TARBALL_SHA256=${KERNEL_TARBALL_SHA256:-"2818053c07976ba4ed5f44deb0f5dc7ae7b0975d7918c313d48d8fe7c4e598cb"}
 
 CONFIG_ONLY=false
 
@@ -89,12 +90,24 @@ require_command curl tar make sha256sum
 
 mkdir -p "$CACHE_DIR" "$BUILD_DIR" "$OUT_DIR"
 
+verify_tarball() {
+  local tarball=$1
+  local want_sha=$2
+  local got_sha
+  got_sha=$(sha256sum "$tarball" | awk '{print $1}')
+  [[ "$got_sha" == "$want_sha" ]] || die "kernel tarball checksum mismatch for $tarball (got $got_sha, want $want_sha)"
+}
+
 if [[ ! -f "$KERNEL_TARBALL" ]]; then
   tmp_tarball="$KERNEL_TARBALL.tmp"
   rm -f "$tmp_tarball"
   printf 'downloading %s\n' "$KERNEL_TARBALL_URL"
   curl --fail --location --retry 5 --retry-delay 2 --output "$tmp_tarball" "$KERNEL_TARBALL_URL"
   mv "$tmp_tarball" "$KERNEL_TARBALL"
+fi
+
+if ! verify_tarball "$KERNEL_TARBALL" "$KERNEL_TARBALL_SHA256"; then
+  :
 fi
 
 if [[ ! -d "$SRC_DIR" ]]; then
@@ -112,10 +125,25 @@ printf 'merging kernel config\n'
 make -C "$SRC_DIR" O="$BUILD_DIR" ARCH="$ARCH" olddefconfig
 
 while IFS= read -r line; do
-  [[ -z "$line" || "$line" == \#* ]] && continue
-  symbol=${line%%=*}
-  actual=$(grep -E "^${symbol}=" "$BUILD_DIR/.config" || true)
-  [[ "$actual" == "$line" ]] || die "config merge did not keep $line (got: ${actual:-unset})"
+  [[ -z "$line" ]] && continue
+  case "$line" in
+    \#\ CONFIG_*\ is\ not\ set)
+      symbol=${line#\# }
+      symbol=${symbol% is not set}
+      grep -Eq "^# ${symbol} is not set$" "$BUILD_DIR/.config" || die "config merge did not keep $line"
+      ;;
+    \#*)
+      continue
+      ;;
+    CONFIG_*=*)
+      symbol=${line%%=*}
+      actual=$(grep -E "^${symbol}=" "$BUILD_DIR/.config" || true)
+      [[ "$actual" == "$line" ]] || die "config merge did not keep $line (got: ${actual:-unset})"
+      ;;
+    *)
+      die "unsupported fragment line: $line"
+      ;;
+  esac
 done < "$FRAGMENT_CONFIG"
 
 if [[ "$CONFIG_ONLY" == false ]]; then
@@ -135,6 +163,8 @@ if [[ "$CONFIG_ONLY" == false ]]; then
     cd "$OUT_DIR"
     sha256sum "$ARTIFACT_BASENAME" > "$ARTIFACT_BASENAME.sha256"
   )
+else
+  rm -f "$artifact_path" "$sha_path"
 fi
 
 printf '\noutputs:\n'

@@ -18,6 +18,7 @@ Keel guest kernel build.
 
 1. Download the Linux `6.1.167` source tarball from `kernel.org` into
    `hack/kernel/.cache/`.
+   The tarball is verified against a pinned SHA-256 before use.
 2. Extract the source tree once and reuse it across runs.
 3. Start from the vendored Firecracker baseline config.
 4. Merge the Keel fragment.
@@ -44,6 +45,9 @@ Run the cheap config-only path:
 ```bash
 ./hack/kernel/build-kernel.sh --config-only
 ```
+
+`--config-only` writes only the merged `.config` output and removes any stale
+`vmlinux` / `.sha256` artifacts for the selected basename.
 
 Useful overrides:
 
