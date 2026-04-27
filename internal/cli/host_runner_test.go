@@ -237,11 +237,12 @@ func TestHostRunnerPassesDefaultKernelSourceToResolution(t *testing.T) {
 	writeCachedRootfsForHostRunnerTest(t, tempDir, cfg.Image)
 
 	var gotKernelCfg config.KernelConfig
+	resolvedKernelPath := filepath.Join(tempDir, "resolved-vmlinux")
 	runner := HostRunner{
 		RuntimeDir: tempDir,
 		EnsureKernel: func(_ context.Context, kernelCfg config.KernelConfig) (string, error) {
 			gotKernelCfg = kernelCfg
-			return filepath.Join(tempDir, "resolved-vmlinux"), nil
+			return resolvedKernelPath, nil
 		},
 		GuestAssets: stubGuestAssets,
 		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
@@ -249,7 +250,8 @@ func TestHostRunnerPassesDefaultKernelSourceToResolution(t *testing.T) {
 		},
 	}
 
-	if _, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{}); err != nil {
+	assets, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{})
+	if err != nil {
 		t.Fatalf("prepareAssets() error = %v", err)
 	}
 	if got, want := gotKernelCfg.Source, "release://latest"; got != want {
@@ -257,6 +259,9 @@ func TestHostRunnerPassesDefaultKernelSourceToResolution(t *testing.T) {
 	}
 	if gotKernelCfg.Path != "" {
 		t.Fatalf("kernel path = %q, want empty", gotKernelCfg.Path)
+	}
+	if got, want := assets.KernelPath, resolvedKernelPath; got != want {
+		t.Fatalf("assets.KernelPath = %q, want %q", got, want)
 	}
 }
 
@@ -271,11 +276,12 @@ func TestHostRunnerPassesKernelSourceToResolution(t *testing.T) {
 	writeCachedRootfsForHostRunnerTest(t, tempDir, cfg.Image)
 
 	var gotKernelCfg config.KernelConfig
+	resolvedKernelPath := filepath.Join(tempDir, "resolved-vmlinux")
 	runner := HostRunner{
 		RuntimeDir: tempDir,
 		EnsureKernel: func(_ context.Context, kernelCfg config.KernelConfig) (string, error) {
 			gotKernelCfg = kernelCfg
-			return filepath.Join(tempDir, "resolved-vmlinux"), nil
+			return resolvedKernelPath, nil
 		},
 		GuestAssets: stubGuestAssets,
 		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
@@ -283,11 +289,18 @@ func TestHostRunnerPassesKernelSourceToResolution(t *testing.T) {
 		},
 	}
 
-	if _, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{}); err != nil {
+	assets, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{})
+	if err != nil {
 		t.Fatalf("prepareAssets() error = %v", err)
 	}
-	if got, want := gotKernelCfg, cfg.Kernel; !reflect.DeepEqual(got, want) {
-		t.Fatalf("kernel config = %#v, want %#v", got, want)
+	if got, want := gotKernelCfg.Source, cfg.Kernel.Source; got != want {
+		t.Fatalf("kernel source = %q, want %q", got, want)
+	}
+	if gotKernelCfg.Path != "" {
+		t.Fatalf("kernel path = %q, want empty", gotKernelCfg.Path)
+	}
+	if got, want := assets.KernelPath, resolvedKernelPath; got != want {
+		t.Fatalf("assets.KernelPath = %q, want %q", got, want)
 	}
 }
 
