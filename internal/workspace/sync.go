@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 type SyncResult struct {
@@ -143,6 +145,13 @@ func confirmSync(in io.Reader, out io.Writer, diff Diff) (bool, error) {
 	if in == nil {
 		in = os.Stdin
 	}
+	if file, ok := in.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+		return confirmSyncTerminal(file, out, diff)
+	}
+	return confirmSyncLineReader(in, out, diff)
+}
+
+func confirmSyncLineReader(in io.Reader, out io.Writer, diff Diff) (bool, error) {
 	reader := bufio.NewReader(in)
 	for {
 		if _, err := fmt.Fprint(out, "Apply workspace changes? [y/N/d(iff)] "); err != nil {
@@ -163,6 +172,45 @@ func confirmSync(in io.Reader, out io.Writer, diff Diff) (bool, error) {
 		}
 		if err == io.EOF {
 			return false, nil
+		}
+	}
+}
+
+func confirmSyncTerminal(in *os.File, out io.Writer, diff Diff) (bool, error) {
+	state, err := term.MakeRaw(int(in.Fd()))
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = term.Restore(int(in.Fd()), state)
+	}()
+
+	reader := bufio.NewReader(in)
+	for {
+		if _, err := fmt.Fprint(out, "Apply workspace changes? [y/N/d(iff)] "); err != nil {
+			return false, err
+		}
+		b, err := reader.ReadByte()
+		if err != nil {
+			return false, err
+		}
+
+		switch strings.ToLower(string(b)) {
+		case "y":
+			_, _ = fmt.Fprintln(out, "y")
+			return true, nil
+		case "d":
+			_, _ = fmt.Fprintln(out, "d")
+			printDetailedDiff(out, diff)
+		case "\r", "\n", "n":
+			if b == 'n' || b == 'N' {
+				_, _ = fmt.Fprintln(out, string(b))
+			} else {
+				_, _ = fmt.Fprintln(out)
+			}
+			return false, nil
+		default:
+			// Keep the prompt strict and redraw on unknown keys.
 		}
 	}
 }
