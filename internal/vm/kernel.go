@@ -24,6 +24,8 @@ var firecrackerVersionPattern = regexp.MustCompile(`v?(\d+)\.(\d+)\.(\d+)`)
 type KernelManager struct {
 	HTTPClient         *http.Client
 	BucketBaseURL      string
+	CacheDir           string
+	ReleaseAPIBaseURL  string
 	Arch               string
 	FirecrackerVersion func(context.Context) (string, error)
 	Progress           func(KernelProgress)

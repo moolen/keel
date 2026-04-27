@@ -5,8 +5,11 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/moolen/keel/internal/config"
 )
 
 func TestKernelManagerEnsureDownloadsLatestKernel(t *testing.T) {
@@ -77,6 +80,31 @@ func TestKernelManagerRespectsExistingKernel(t *testing.T) {
 
 	if _, err := manager.Ensure(context.Background(), destPath); err != nil {
 		t.Fatalf("Ensure() error = %v", err)
+	}
+}
+
+func TestKernelManagerEnsureConfigUsesKernelPathDirectly(t *testing.T) {
+	kernelPath := filepath.Join(t.TempDir(), "custom-vmlinux")
+	if err := os.WriteFile(kernelPath, []byte("kernel"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	manager := KernelManager{
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			t.Fatalf("unexpected HTTP request: %s", req.URL.String())
+			return nil, nil
+		})},
+	}
+
+	gotPath, err := manager.EnsureConfig(context.Background(), config.KernelConfig{
+		Path:   kernelPath,
+		Source: "release://latest",
+	})
+	if err != nil {
+		t.Fatalf("EnsureConfig() error = %v", err)
+	}
+	if gotPath != kernelPath {
+		t.Fatalf("EnsureConfig() path = %q, want %q", gotPath, kernelPath)
 	}
 }
 
