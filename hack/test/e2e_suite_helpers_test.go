@@ -3,7 +3,6 @@ package test
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -21,21 +20,21 @@ type e2eSuite struct {
 }
 
 type e2eProject struct {
-	suite     *e2eSuite
-	dir       string
-	home      string
-	cacheDir  string
-	kernel    string
-	fixtures  e2eFixtures
+	suite    *e2eSuite
+	dir      string
+	home     string
+	cacheDir string
+	kernel   string
+	fixtures e2eFixtures
 }
 
 type e2eFixtures struct {
-	Hello         string
-	Existing      string
-	DoNotDelete   string
-	SourceDir     string
-	NodeDir       string
-	PythonDir     string
+	Hello       string
+	Existing    string
+	DoNotDelete string
+	SourceDir   string
+	NodeDir     string
+	PythonDir   string
 }
 
 type e2eRunResult struct {
@@ -349,10 +348,6 @@ func sh(command string) []string {
 
 func yamlBlock(lines ...string) string {
 	return strings.Join(lines, "\n")
-}
-
-func quoted(path string) string {
-	return fmt.Sprintf("%q", path)
 }
 
 func wrapGuestCommand(command string) string {

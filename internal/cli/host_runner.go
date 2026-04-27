@@ -152,7 +152,7 @@ func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *
 				if err != nil {
 					return err
 				}
-				defer devNull.Close()
+				defer func() { _ = devNull.Close() }()
 				stdin = devNull
 			}
 			client := keelpty.Client{
