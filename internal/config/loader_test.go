@@ -47,6 +47,12 @@ func TestLoadConfigPrefersKernelPathOverLegacyKernelPath(t *testing.T) {
 	if got, want := cfg.Kernel.Path, "/opt/keel/project-vmlinux"; got != want {
 		t.Fatalf("cfg.Kernel.Path = %q, want %q", got, want)
 	}
+	if got := cfg.KernelPath; got != "" {
+		t.Fatalf("cfg.KernelPath = %q, want empty after normalization", got)
+	}
+	if got := cfg.Kernel.Source; got != "" {
+		t.Fatalf("cfg.Kernel.Source = %q, want empty when kernel.path is set", got)
+	}
 }
 
 func TestLoadMergedConfig(t *testing.T) {
@@ -106,6 +112,12 @@ env:
 	}
 	if cfg.Kernel.Path != "/opt/keel/vmlinux" {
 		t.Fatalf("cfg.Kernel.Path = %q", cfg.Kernel.Path)
+	}
+	if cfg.KernelPath != "" {
+		t.Fatalf("cfg.KernelPath = %q, want empty after normalization", cfg.KernelPath)
+	}
+	if cfg.Kernel.Source != "" {
+		t.Fatalf("cfg.Kernel.Source = %q, want empty when kernel.path is set", cfg.Kernel.Source)
 	}
 	if cfg.Resources.VCPU != 3 || cfg.Resources.MemoryMB != 3072 || cfg.Resources.DiskMB != 6144 {
 		t.Fatalf("unexpected resources: %+v", cfg.Resources)

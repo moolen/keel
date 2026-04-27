@@ -3,7 +3,7 @@ package config
 type Config struct {
 	Image            string            `yaml:"image"`
 	ImageCacheDir    string            `yaml:"image_cache_dir"`
-	KernelPath       string            `yaml:"kernel_path"`
+	KernelPath       string            `yaml:"kernel_path,omitempty"`
 	DefaultResources ResourceConfig    `yaml:"default_resources"`
 	Kernel           KernelConfig      `yaml:"kernel"`
 	Resources        ResourceConfig    `yaml:"resources"`
@@ -20,8 +20,8 @@ type Config struct {
 }
 
 type KernelConfig struct {
-	Path   string `yaml:"path"`
-	Source string `yaml:"source"`
+	Path   string `yaml:"path,omitempty"`
+	Source string `yaml:"source,omitempty"`
 }
 
 type ResourceConfig struct {

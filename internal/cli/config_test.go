@@ -65,4 +65,7 @@ func TestConfigInitWritesStarterFile(t *testing.T) {
 	if !strings.Contains(string(data), "image: ubuntu:24.04") {
 		t.Fatalf("starter config missing image: %q", string(data))
 	}
+	if !strings.Contains(string(data), "kernel:\n  source: release://latest") {
+		t.Fatalf("starter config missing kernel source: %q", string(data))
+	}
 }

@@ -14,6 +14,9 @@ import (
 
 const starterConfig = `image: ubuntu:24.04
 
+kernel:
+  source: release://latest
+
 resources:
   vcpu: 2
   memory_mb: 2048

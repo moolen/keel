@@ -104,6 +104,7 @@ func Load(opts LoadOptions) (Config, error) {
 	cfg.ImageCacheDir = expandHome(cfg.ImageCacheDir)
 	cfg.KernelPath = expandHome(cfg.KernelPath)
 	cfg.Kernel.Path = expandHome(cfg.Kernel.Path)
+	normalizeKernelConfig(&cfg)
 	cfg.Workspace.Mount = resolveHostPath(wd, cfg.Workspace.Mount)
 	for i := range cfg.Volumes {
 		cfg.Volumes[i].Source = resolveHostPath(wd, cfg.Volumes[i].Source)
@@ -353,6 +354,18 @@ func resolveHostPath(base, path string) string {
 		return path
 	}
 	return filepath.Join(base, path)
+}
+
+func normalizeKernelConfig(cfg *Config) {
+	if cfg.Kernel.Path != "" {
+		cfg.Kernel.Source = ""
+		cfg.KernelPath = ""
+		return
+	}
+	cfg.KernelPath = ""
+	if cfg.Kernel.Source == "" {
+		cfg.Kernel.Source = "release://latest"
+	}
 }
 
 func validateConfig(cfg Config) error {
