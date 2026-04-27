@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/moolen/keel/internal/paths"
 )
 
 type PrepareOptions struct {
@@ -66,7 +68,7 @@ func PrepareImage(opts PrepareOptions) (PrepareResult, error) {
 }
 
 func snapshotDirectory(source string) (string, error) {
-	stageDir, err := os.MkdirTemp("", "keel-workspace-stage-*")
+	stageDir, err := paths.NewTempDir("keel-workspace-stage-*")
 	if err != nil {
 		return "", err
 	}

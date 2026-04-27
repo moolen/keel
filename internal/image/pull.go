@@ -19,6 +19,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/moolen/keel/internal/paths"
 )
 
 type Puller struct {
@@ -145,7 +146,7 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 		return PullResult{}, err
 	}
 
-	tempDir, err := os.MkdirTemp("", "keel-rootfs-*")
+	tempDir, err := paths.NewTempDir("keel-rootfs-*")
 	if err != nil {
 		return PullResult{}, err
 	}

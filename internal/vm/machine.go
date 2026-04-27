@@ -26,6 +26,7 @@ type RuntimeAssets struct {
 	VSockPath     string
 	LogPath       string
 	RuntimeDir    string
+	ControlDir    string
 	CleanupDir    bool
 	CID           uint32
 	Network       *GuestNetwork
@@ -114,13 +115,20 @@ func (m *Machine) BuildHypervisorConfig() (hypervisor.Config, error) {
 		VCPUs:             m.Config.Resources.VCPU,
 		MemoryMB:          m.Config.Resources.MemoryMB,
 		VSockCID:          m.Assets.CID,
-		RuntimeDir:        m.Assets.RuntimeDir,
+		RuntimeDir:        runtimeControlDir(m.Assets),
 		SocketPath:        m.Assets.SocketPath,
 		VSockPath:         m.Assets.VSockPath,
 		LogPath:           m.Assets.LogPath,
 		Verbose:           m.Config.Verbose,
 		NetworkInterfaces: m.networkInterfaces(),
 	}, nil
+}
+
+func runtimeControlDir(assets RuntimeAssets) string {
+	if assets.ControlDir != "" {
+		return assets.ControlDir
+	}
+	return assets.RuntimeDir
 }
 
 func (m *Machine) Prepare(ctx context.Context) (hypervisor.VM, func(), error) {

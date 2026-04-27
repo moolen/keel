@@ -502,6 +502,7 @@ func TestHostRunnerRefreshesCachedGuestAgentWhenDigestChanges(t *testing.T) {
 
 	guestAssets := image.GuestAgentAssets{Binary: []byte("agent-new")}
 	var machineAssets vm.RuntimeAssets
+	var runtimeAgent string
 	runner := HostRunner{
 		RuntimeDir: tempDir,
 		EnsureKernel: func(context.Context, string) (string, error) {
@@ -515,6 +516,7 @@ func TestHostRunnerRefreshesCachedGuestAgentWhenDigestChanges(t *testing.T) {
 		},
 		MachineFactory: func(_ config.Config, assets vm.RuntimeAssets) machineRunner {
 			machineAssets = assets
+			runtimeAgent = debugfsReadCLI(t, assets.RootfsPath, "/usr/local/bin/keel-agent")
 			return stubMachineRunner{}
 		},
 		PrepareFeatures: func(string, []config.FeatureConfig) error { return nil },
@@ -533,7 +535,7 @@ func TestHostRunnerRefreshesCachedGuestAgentWhenDigestChanges(t *testing.T) {
 	if got, want := strings.TrimSpace(string(data)), guestAssets.Digest(); got != want {
 		t.Fatalf("agent digest = %q, want %q", got, want)
 	}
-	if got := debugfsReadCLI(t, machineAssets.RootfsPath, "/usr/local/bin/keel-agent"); got != "agent-new" {
+	if got := runtimeAgent; got != "agent-new" {
 		t.Fatalf("runtime rootfs keel-agent = %q, want refreshed guest agent", got)
 	}
 }
@@ -585,7 +587,13 @@ func TestHostRunnerInjectsMITMGuestTrustAssets(t *testing.T) {
 		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
 			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
 		},
-		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+		MachineFactory: func(_ config.Config, assets vm.RuntimeAssets) machineRunner {
+			if got := debugfsReadCLI(t, assets.RootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt"); got == "" {
+				t.Fatal("expected injected mitm trust certificate")
+			}
+			if got := debugfsReadCLI(t, assets.RootfsPath, "/etc/keel/install-ca.sh"); !strings.Contains(got, "update-ca-certificates") {
+				t.Fatalf("install-ca.sh content = %q", got)
+			}
 			return stubMachineRunner{}
 		},
 	}
@@ -596,12 +604,6 @@ func TestHostRunnerInjectsMITMGuestTrustAssets(t *testing.T) {
 
 	if got, ok := debugfsReadCLIIfPresent(t, layout.RootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt"); ok && got != "" {
 		t.Fatal("cache rootfs should remain untouched by runtime guest trust injection")
-	}
-	if got := debugfsReadCLI(t, filepath.Join(tempDir, "rootfs.ext4"), "/usr/local/share/ca-certificates/keel-local-ca.crt"); got == "" {
-		t.Fatal("expected injected mitm trust certificate")
-	}
-	if got := debugfsReadCLI(t, filepath.Join(tempDir, "rootfs.ext4"), "/etc/keel/install-ca.sh"); !strings.Contains(got, "update-ca-certificates") {
-		t.Fatalf("install-ca.sh content = %q", got)
 	}
 }
 
@@ -846,8 +848,8 @@ func TestHostRunnerAllocatesUniqueRuntimeDirByDefault(t *testing.T) {
 		t.Fatalf("workspace paths should differ, got %q", preparePaths[0])
 	}
 	for _, path := range preparePaths {
-		if !strings.Contains(filepath.Base(filepath.Dir(path)), "keel-runtime-") {
-			t.Fatalf("workspace path = %q, want generated keel-runtime directory", path)
+		if !strings.HasPrefix(filepath.Base(filepath.Dir(path)), "vm-") {
+			t.Fatalf("workspace path = %q, want generated vm directory", path)
 		}
 	}
 }
@@ -931,12 +933,13 @@ func TestHostRunnerRemovesArtifactsFromExplicitRuntimeDir(t *testing.T) {
 		t.Fatalf("runtime dir %q should remain, stat err=%v", tempDir, err)
 	}
 	for _, artifact := range []string{
+		filepath.Join(tempDir, "rootfs.ext4"),
 		filepath.Join(tempDir, "workspace.ext4"),
 		filepath.Join(tempDir, "firecracker.sock"),
 		filepath.Join(tempDir, "firecracker.vsock"),
 		filepath.Join(tempDir, "firecracker.vsock_3053"),
 		filepath.Join(tempDir, "firecracker.vsock_3128"),
-		filepath.Join(tempDir, "firecracker.log"),
+		filepath.Join(tempDir, "logs", "firecracker.log"),
 	} {
 		if _, err := os.Stat(artifact); !os.IsNotExist(err) {
 			t.Fatalf("artifact %q should be removed, stat err=%v", artifact, err)

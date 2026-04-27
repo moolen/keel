@@ -16,6 +16,7 @@ import (
 	"github.com/moolen/keel/internal/hypervisor"
 	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/network"
+	"github.com/moolen/keel/internal/paths"
 	keelpty "github.com/moolen/keel/internal/pty"
 	"github.com/moolen/keel/internal/runtimeenv"
 	"github.com/moolen/keel/internal/vm"
@@ -101,7 +102,14 @@ func (r HostRunner) runtimeDir() (string, error) {
 	if r.RuntimeDir != "" {
 		return r.RuntimeDir, nil
 	}
-	return os.MkdirTemp(os.TempDir(), "keel-runtime-*")
+	return paths.NewRuntimeDataDir()
+}
+
+func (r HostRunner) controlDir() (string, error) {
+	if r.RuntimeDir != "" {
+		return r.RuntimeDir, nil
+	}
+	return paths.NewRuntimeControlDir()
 }
 
 func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
@@ -457,6 +465,13 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
+	controlDir, err := r.controlDir()
+	if err != nil {
+		return vm.RuntimeAssets{}, err
+	}
+	if err := os.MkdirAll(controlDir, 0o755); err != nil {
+		return vm.RuntimeAssets{}, err
+	}
 	runtimeRootfsPath := filepath.Join(runtimeDir, "rootfs.ext4")
 	if err := copyRuntimeRootfs(layout.RootfsPath, runtimeRootfsPath); err != nil {
 		return vm.RuntimeAssets{}, err
@@ -478,10 +493,11 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 		RootfsPath:    runtimeRootfsPath,
 		WorkspacePath: workspacePath,
 		MetadataPath:  filepath.Join(runtimeDir, "bootmeta.ext4"),
-		SocketPath:    filepath.Join(runtimeDir, "firecracker.sock"),
-		VSockPath:     filepath.Join(runtimeDir, "firecracker.vsock"),
-		LogPath:       filepath.Join(runtimeDir, "firecracker.log"),
+		SocketPath:    filepath.Join(controlDir, "firecracker.sock"),
+		VSockPath:     filepath.Join(controlDir, "firecracker.vsock"),
+		LogPath:       filepath.Join(runtimeDir, "logs", "firecracker.log"),
 		RuntimeDir:    runtimeDir,
+		ControlDir:    controlDir,
 		CleanupDir:    r.RuntimeDir == "",
 		CID:           52,
 	}
@@ -854,9 +870,13 @@ func max(a, b int) int {
 func (r HostRunner) cleanupRuntimeAssets(assets vm.RuntimeAssets) {
 	if assets.CleanupDir && assets.RuntimeDir != "" {
 		_ = os.RemoveAll(assets.RuntimeDir)
+		if assets.ControlDir != "" && assets.ControlDir != assets.RuntimeDir {
+			_ = os.RemoveAll(assets.ControlDir)
+		}
 		return
 	}
 	for _, path := range []string{
+		assets.RootfsPath,
 		assets.WorkspacePath,
 		assets.MetadataPath,
 		assets.SocketPath,

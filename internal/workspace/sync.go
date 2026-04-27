@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/moolen/keel/internal/paths"
 	"golang.org/x/term"
 )
 
@@ -106,7 +107,7 @@ func ApplyDiff(hostDir, vmDir string, diff Diff, syncDeletes bool) error {
 }
 
 func mountImageReadOnly(imagePath string) (string, func(), error) {
-	mountDir, err := os.MkdirTemp("", "keel-workspace-mount-*")
+	mountDir, err := paths.NewTempDir("keel-workspace-mount-*")
 	if err != nil {
 		return "", nil, err
 	}
