@@ -21,6 +21,7 @@ jobs:
       KERNEL_VERSION: 6.1.167
       KERNEL_ARCH: x86_64
       KERNEL_CACHE_DIR: ${{ github.workspace }}/hack/kernel/.cache
+      KERNEL_TARBALL_PATH: ${{ github.workspace }}/hack/kernel/.cache/linux-6.1.167.tar.xz
       KERNEL_BUILD_DIR: ${{ github.workspace }}/hack/kernel/.cache/build-x86_64-6.1.167
       KERNEL_ARTIFACT_BASENAME: keel-vmlinux-x86_64
     steps:
@@ -119,21 +120,19 @@ jobs:
             bc \
             bison \
             build-essential \
+            curl \
             dwarves \
             flex \
             libelf-dev \
-            libssl-dev
+            libssl-dev \
+            xz-utils
 
-      - name: Restore kernel build cache
-        uses: actions/cache@v4
+      - name: Restore kernel tarball cache
+        id: kernel-tarball-cache
+        uses: actions/cache/restore@v4
         with:
-          path: |
-            ${{ env.KERNEL_CACHE_DIR }}/linux-${{ env.KERNEL_VERSION }}.tar.xz
-            ${{ env.KERNEL_CACHE_DIR }}/linux-${{ env.KERNEL_VERSION }}
-            ${{ env.KERNEL_BUILD_DIR }}
-          key: ${{ runner.os }}-kernel-${{ env.KERNEL_ARCH }}-${{ env.KERNEL_VERSION }}-${{ hashFiles('hack/kernel/build-kernel.sh', 'hack/kernel/firecracker-6.1-x86_64.config', 'hack/kernel/keel-netfilter.fragment') }}
-          restore-keys: |
-            ${{ runner.os }}-kernel-${{ env.KERNEL_ARCH }}-${{ env.KERNEL_VERSION }}-
+          path: ${{ env.KERNEL_TARBALL_PATH }}
+          key: ${{ runner.os }}-kernel-tarball-${{ env.KERNEL_ARCH }}-${{ env.KERNEL_VERSION }}
 
       - name: Build release kernel
         shell: bash
@@ -146,6 +145,13 @@ jobs:
         run: |
           set -euo pipefail
           bash ./hack/kernel/build-kernel.sh
+
+      - name: Save kernel tarball cache
+        if: steps.kernel-tarball-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.KERNEL_TARBALL_PATH }}
+          key: ${{ steps.kernel-tarball-cache.outputs.cache-primary-key }}
 
       - name: Build keel
         shell: bash
