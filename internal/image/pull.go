@@ -64,7 +64,16 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 	if err != nil {
 		return PullResult{}, err
 	}
-	if cacheLayoutReady(layout, p.GuestInit != nil) {
+	if err := os.MkdirAll(layout.Directory, 0o755); err != nil {
+		return PullResult{}, err
+	}
+
+	cacheReady, err := CacheReady(layout, p.GuestInit != nil)
+	if err != nil {
+		return PullResult{}, err
+	}
+	ociReady := fileExists(layout.OCIPath)
+	if cacheReady {
 		refresh, err := p.shouldRefreshCache(ctx, layout, ref)
 		if err != nil {
 			return PullResult{}, err
@@ -72,51 +81,65 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 		if !refresh {
 			return PullResult{Layout: layout}, nil
 		}
-		if err := os.RemoveAll(layout.Directory); err != nil {
+	}
+	rebuildFromOCI := false
+	if !cacheReady && ociReady {
+		refresh, err := p.shouldRefreshCache(ctx, layout, ref)
+		if err != nil {
 			return PullResult{}, err
 		}
-	}
-	if err := os.MkdirAll(layout.Directory, 0o755); err != nil {
-		return PullResult{}, err
-	}
-
-	fetch := p.Fetch
-	if fetch == nil {
-		fetch = fetchRemoteImage
-	}
-	p.reportProgress(PullProgress{Phase: PullPhaseResolve})
-	img, err := fetch(ctx, ref)
-	if err != nil {
-		return PullResult{}, err
+		if !refresh {
+			rebuildFromOCI = true
+		}
 	}
 
-	parsedRef, err := name.ParseReference(ref)
-	if err != nil {
-		return PullResult{}, err
-	}
-	progressUpdates := make(chan v1.Update, 32)
-	var progressWG sync.WaitGroup
-	if p.Progress != nil {
-		progressWG.Add(1)
-		go func() {
-			defer progressWG.Done()
-			for update := range progressUpdates {
-				if update.Total <= 0 && update.Complete <= 0 {
-					continue
+	var img v1.Image
+	switch {
+	case rebuildFromOCI:
+		p.reportProgress(PullProgress{Phase: PullPhaseResolve})
+		img, err = tarball.ImageFromPath(layout.OCIPath, nil)
+		if err != nil {
+			return PullResult{}, fmt.Errorf("load cached image tarball: %w", err)
+		}
+	default:
+		fetch := p.Fetch
+		if fetch == nil {
+			fetch = fetchRemoteImage
+		}
+		p.reportProgress(PullProgress{Phase: PullPhaseResolve})
+		img, err = fetch(ctx, ref)
+		if err != nil {
+			return PullResult{}, err
+		}
+
+		parsedRef, err := name.ParseReference(ref)
+		if err != nil {
+			return PullResult{}, err
+		}
+		progressUpdates := make(chan v1.Update, 32)
+		var progressWG sync.WaitGroup
+		if p.Progress != nil {
+			progressWG.Add(1)
+			go func() {
+				defer progressWG.Done()
+				for update := range progressUpdates {
+					if update.Total <= 0 && update.Complete <= 0 {
+						continue
+					}
+					p.reportProgress(PullProgress{
+						Phase:   PullPhaseDownload,
+						Current: update.Complete,
+						Total:   update.Total,
+					})
 				}
-				p.reportProgress(PullProgress{
-					Phase:   PullPhaseDownload,
-					Current: update.Complete,
-					Total:   update.Total,
-				})
-			}
-		}()
-	}
-	err = tarball.WriteToFile(layout.OCIPath, parsedRef, img, tarball.WithProgress(progressUpdates))
-	close(progressUpdates)
-	progressWG.Wait()
-	if err != nil {
-		return PullResult{}, fmt.Errorf("write image tarball: %w", err)
+			}()
+		}
+		err = tarball.WriteToFile(layout.OCIPath, parsedRef, img, tarball.WithProgress(progressUpdates))
+		close(progressUpdates)
+		progressWG.Wait()
+		if err != nil {
+			return PullResult{}, fmt.Errorf("write image tarball: %w", err)
+		}
 	}
 	if err := writeImageDigest(layout.DigestPath, img); err != nil {
 		return PullResult{}, err
@@ -154,6 +177,9 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 	if err := InjectGuestTrust(layout.RootfsPath, p.GuestTrust); err != nil {
 		return PullResult{}, err
 	}
+	if err := WriteCacheVersion(layout.VersionPath); err != nil {
+		return PullResult{}, err
+	}
 	p.reportProgress(PullProgress{Phase: PullPhaseReady, Current: 1, Total: 1})
 
 	return PullResult{Layout: layout}, nil
@@ -167,7 +193,20 @@ func (p Puller) shouldRefreshCache(ctx context.Context, layout CacheLayout, ref 
 	switch {
 	case err == nil:
 	case os.IsNotExist(err):
-		return true, nil
+		if !fileExists(layout.OCIPath) {
+			return true, nil
+		}
+		img, loadErr := tarball.ImageFromPath(layout.OCIPath, nil)
+		if loadErr != nil {
+			return true, nil
+		}
+		if writeErr := writeImageDigest(layout.DigestPath, img); writeErr != nil {
+			return false, writeErr
+		}
+		data, err = os.ReadFile(layout.DigestPath)
+		if err != nil {
+			return false, err
+		}
 	default:
 		return false, err
 	}
@@ -188,20 +227,6 @@ func (p Puller) reportProgress(update PullProgress) {
 	if p.Progress != nil {
 		p.Progress(update)
 	}
-}
-
-func cacheLayoutReady(layout CacheLayout, requireAgent bool) bool {
-	required := []string{layout.RootfsPath, layout.OCIPath}
-	if requireAgent {
-		required = append(required, layout.AgentPath)
-	}
-	for _, path := range required {
-		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
-			return false
-		}
-	}
-	return true
 }
 
 func ListCachedImages(cacheDir string) ([]CachedImage, error) {
@@ -238,6 +263,11 @@ func ListCachedImages(cacheDir string) ([]CachedImage, error) {
 		return images[i].Reference < images[j].Reference
 	})
 	return images, nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func sizeForFile(path string) int64 {

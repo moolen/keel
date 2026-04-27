@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -25,22 +26,107 @@ const (
 	tcpProxyAddr = "0.0.0.0:3128"
 )
 
-func StartTCPProxy(ctx context.Context) error {
-	if err := ensureTransparentTCPRedirect(); err != nil {
+const (
+	bpfCgroupMode      = "bpf-cgroup"
+	legacyRedirectMode = "legacy-redirect"
+	proxyAwareOnlyMode = "proxy-aware-only"
+)
+
+type trafficInterception interface {
+	mode() string
+	workloadCgroupFD() int
+	attachCommand(*exec.Cmd)
+	resolveOriginalDestination(net.Conn) (string, bool, error)
+	close() error
+}
+
+type interceptionFactory struct {
+	startBPF func() (trafficInterception, error)
+	startNFT func() (trafficInterception, error)
+}
+
+type proxyAwareOnlyInterception struct{}
+
+func (proxyAwareOnlyInterception) mode() string { return proxyAwareOnlyMode }
+
+func (proxyAwareOnlyInterception) workloadCgroupFD() int { return 0 }
+
+func (proxyAwareOnlyInterception) attachCommand(*exec.Cmd) {}
+
+func (proxyAwareOnlyInterception) resolveOriginalDestination(net.Conn) (string, bool, error) {
+	return "", false, nil
+}
+
+func (proxyAwareOnlyInterception) close() error { return nil }
+
+type legacyRedirectInterception struct{}
+
+func (legacyRedirectInterception) mode() string { return legacyRedirectMode }
+
+func (legacyRedirectInterception) workloadCgroupFD() int { return 0 }
+
+func (legacyRedirectInterception) attachCommand(*exec.Cmd) {}
+
+func (legacyRedirectInterception) resolveOriginalDestination(conn net.Conn) (string, bool, error) {
+	destination, err := originalDestination(conn)
+	if err != nil {
+		return "", false, err
+	}
+	return destination, true, nil
+}
+
+func (legacyRedirectInterception) close() error { return nil }
+
+func chooseTrafficInterception(factory interceptionFactory) trafficInterception {
+	if factory.startBPF != nil {
+		interception, err := factory.startBPF()
+		if err == nil {
+			return interception
+		}
+		log.Printf("cgroup bpf interception unavailable: %v", err)
+	}
+	if factory.startNFT != nil {
+		interception, err := factory.startNFT()
+		if err == nil {
+			return interception
+		}
 		log.Printf("transparent tcp redirect unavailable: %v", err)
-	} else {
+	}
+	return proxyAwareOnlyInterception{}
+}
+
+func StartTCPProxy(ctx context.Context) (trafficInterception, error) {
+	interception := chooseTrafficInterception(interceptionFactory{
+		startBPF: func() (trafficInterception, error) {
+			return newBPFCgroupInterception()
+		},
+		startNFT: func() (trafficInterception, error) {
+			if err := ensureTransparentTCPRedirect(); err != nil {
+				return nil, err
+			}
+			return legacyRedirectInterception{}, nil
+		},
+	})
+
+	switch interception.mode() {
+	case bpfCgroupMode:
+		log.Printf("cgroup bpf transparent tcp redirect enabled on %s", tcpProxyAddr)
+	case legacyRedirectMode:
 		log.Printf("transparent tcp redirect enabled on %s", tcpProxyAddr)
+	default:
+		log.Printf("transparent tcp redirect unavailable; only proxy-aware clients will work")
 	}
 
 	listener, err := net.Listen("tcp", tcpProxyAddr)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	log.Printf("tcp proxy listening on %s", tcpProxyAddr)
 
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()
+		_ = interception.close()
 	}()
 
 	go func() {
@@ -57,18 +143,18 @@ func StartTCPProxy(ctx context.Context) error {
 					_ = conn.Close()
 				}()
 				log.Printf("tcp proxy accepted %s", conn.RemoteAddr())
-				if err := handleProxyConn(ctx, conn); err != nil && ctx.Err() == nil {
+				if err := handleProxyConn(ctx, interception, conn); err != nil && ctx.Err() == nil {
 					log.Printf("tcp proxy connection error: %v", err)
 				}
 			}()
 		}
 	}()
 
-	return nil
+	return interception, nil
 }
 
-func handleProxyConn(ctx context.Context, client net.Conn) error {
-	if destination, err := originalDestination(client); err == nil && shouldUseOriginalDestination(destination) {
+func handleProxyConn(ctx context.Context, interception trafficInterception, client net.Conn) error {
+	if destination, ok, err := interception.resolveOriginalDestination(client); err == nil && ok && shouldUseOriginalDestination(destination) {
 		log.Printf("tcp proxy using transparent destination %s", destination)
 		upstream, err := connectTCPProxy(destination)
 		if err != nil {

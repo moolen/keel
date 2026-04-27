@@ -15,7 +15,7 @@ import (
 func TestConfigureCommandCredentialLeavesSysProcAttrUnsetWhenProcessOmitted(t *testing.T) {
 	cmd := exec.Command("/bin/sh")
 
-	configureCommandCredential(cmd, nil)
+	configureCommandCredential(cmd, nil, 0)
 
 	if cmd.SysProcAttr != nil {
 		t.Fatalf("cmd.SysProcAttr = %#v, want nil", cmd.SysProcAttr)
@@ -30,7 +30,7 @@ func TestConfigureCommandCredentialAppliesConfiguredCredential(t *testing.T) {
 		SupplementaryGIDs: []int{27, 44},
 	}
 
-	configureCommandCredential(cmd, process)
+	configureCommandCredential(cmd, process, 0)
 
 	if cmd.SysProcAttr == nil {
 		t.Fatal("cmd.SysProcAttr = nil, want non-nil")
@@ -50,6 +50,22 @@ func TestConfigureCommandCredentialAppliesConfiguredCredential(t *testing.T) {
 	}
 	if got, want := cmd.SysProcAttr, (&syscall.SysProcAttr{Credential: credential}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("cmd.SysProcAttr = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfigureCommandCredentialAddsWorkloadCgroupFD(t *testing.T) {
+	cmd := exec.Command("/bin/sh")
+
+	configureCommandCredential(cmd, nil, 42)
+
+	if cmd.SysProcAttr == nil {
+		t.Fatal("cmd.SysProcAttr = nil, want non-nil")
+	}
+	if !cmd.SysProcAttr.UseCgroupFD {
+		t.Fatal("UseCgroupFD = false, want true")
+	}
+	if got, want := cmd.SysProcAttr.CgroupFD, 42; got != want {
+		t.Fatalf("CgroupFD = %d, want %d", got, want)
 	}
 }
 

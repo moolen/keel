@@ -2,19 +2,23 @@ package image
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
 
+const CurrentCacheVersion = "2"
+
 type CacheLayout struct {
-	Registry   string
-	Repository string
-	Tag        string
-	Directory  string
-	RootfsPath string
-	OCIPath    string
-	AgentPath  string
-	DigestPath string
+	Registry    string
+	Repository  string
+	Tag         string
+	Directory   string
+	RootfsPath  string
+	OCIPath     string
+	AgentPath   string
+	DigestPath  string
+	VersionPath string
 }
 
 func CachePath(cacheDir, ref string) string {
@@ -33,15 +37,41 @@ func ResolveCacheLayout(cacheDir, ref string) (CacheLayout, error) {
 
 	dir := filepath.Join(cacheDir, registry, filepath.FromSlash(repository), version)
 	return CacheLayout{
-		Registry:   registry,
-		Repository: repository,
-		Tag:        version,
-		Directory:  dir,
-		RootfsPath: filepath.Join(dir, "rootfs.ext4"),
-		OCIPath:    filepath.Join(dir, "image.tar"),
-		AgentPath:  filepath.Join(dir, "guest-agent.sha256"),
-		DigestPath: filepath.Join(dir, "image.digest"),
+		Registry:    registry,
+		Repository:  repository,
+		Tag:         version,
+		Directory:   dir,
+		RootfsPath:  filepath.Join(dir, "rootfs.ext4"),
+		OCIPath:     filepath.Join(dir, "image.tar"),
+		AgentPath:   filepath.Join(dir, "guest-agent.sha256"),
+		DigestPath:  filepath.Join(dir, "image.digest"),
+		VersionPath: filepath.Join(dir, "cache.version"),
 	}, nil
+}
+
+func CacheReady(layout CacheLayout, requireAgent bool) (bool, error) {
+	required := []string{layout.RootfsPath, layout.OCIPath, layout.VersionPath}
+	if requireAgent {
+		required = append(required, layout.AgentPath)
+	}
+	for _, path := range required {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			return false, nil
+		}
+	}
+	data, err := os.ReadFile(layout.VersionPath)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(data)) == CurrentCacheVersion, nil
+}
+
+func WriteCacheVersion(path string) error {
+	if path == "" {
+		return fmt.Errorf("cache version path is required")
+	}
+	return os.WriteFile(path, []byte(CurrentCacheVersion+"\n"), 0o644)
 }
 
 func parseReference(ref string) (registry, repository, version string, err error) {

@@ -30,7 +30,7 @@ type ProcessConfig struct {
 	SupplementaryGIDs []int `json:"supplementary_gids,omitempty"`
 }
 
-func ServePTY(command []string, cwd string, env []string, process *ProcessConfig) error {
+func ServePTY(command []string, cwd string, env []string, process *ProcessConfig, interception trafficInterception) error {
 	listener, err := vsock.Listen(portPTY, nil)
 	if err != nil {
 		return err
@@ -57,7 +57,10 @@ func ServePTY(command []string, cwd string, env []string, process *ProcessConfig
 	cmd := exec.Command(commandPath, command[1:]...)
 	cmd.Dir = cwd
 	cmd.Env = env
-	configureCommandCredential(cmd, process)
+	configureCommandCredential(cmd, process, workloadCgroupFD(interception))
+	if interception != nil {
+		interception.attachCommand(cmd)
+	}
 
 	ptyFile, err := pty.Start(cmd)
 	if err != nil {
@@ -108,18 +111,32 @@ func ServePTY(command []string, cwd string, env []string, process *ProcessConfig
 	return waitErr
 }
 
-func configureCommandCredential(cmd *exec.Cmd, process *ProcessConfig) {
-	if process == nil {
+func configureCommandCredential(cmd *exec.Cmd, process *ProcessConfig, cgroupFD int) {
+	if process == nil && cgroupFD <= 0 {
 		return
 	}
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	if cgroupFD > 0 {
+		cmd.SysProcAttr.UseCgroupFD = true
+		cmd.SysProcAttr.CgroupFD = cgroupFD
+	}
+	if process == nil {
+		return
 	}
 	cmd.SysProcAttr.Credential = &syscall.Credential{
 		Uid:    uint32(process.UID),
 		Gid:    uint32(process.GID),
 		Groups: supplementaryGroups(process.SupplementaryGIDs),
 	}
+}
+
+func workloadCgroupFD(interception trafficInterception) int {
+	if interception == nil {
+		return 0
+	}
+	return interception.workloadCgroupFD()
 }
 
 func supplementaryGroups(groups []int) []uint32 {

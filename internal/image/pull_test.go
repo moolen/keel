@@ -62,6 +62,9 @@ func TestPullAndCacheMaterializesArtifacts(t *testing.T) {
 	if _, err := os.Stat(result.Layout.DigestPath); err != nil {
 		t.Fatalf("Stat(%q) error = %v", result.Layout.DigestPath, err)
 	}
+	if _, err := os.Stat(result.Layout.VersionPath); err != nil {
+		t.Fatalf("Stat(%q) error = %v", result.Layout.VersionPath, err)
+	}
 	if got := debugfsRead(t, result.Layout.RootfsPath, "/usr/local/bin/keel-agent"); got != "agent-binary" {
 		t.Fatalf("guest agent content = %q", got)
 	}
@@ -130,6 +133,7 @@ func TestPullAndCacheReturnsCachedLayoutWithoutFetching(t *testing.T) {
 		{path: layout.OCIPath, data: "oci"},
 		{path: layout.AgentPath, data: "digest"},
 		{path: layout.DigestPath, data: "sha256:current"},
+		{path: layout.VersionPath, data: CurrentCacheVersion + "\n"},
 	} {
 		if err := os.WriteFile(item.path, []byte(item.data), 0o644); err != nil {
 			t.Fatalf("WriteFile(%q) error = %v", item.path, err)
@@ -153,6 +157,57 @@ func TestPullAndCacheReturnsCachedLayoutWithoutFetching(t *testing.T) {
 	}
 	if result.Layout.Directory != layout.Directory {
 		t.Fatalf("result.Layout.Directory = %q, want %q", result.Layout.Directory, layout.Directory)
+	}
+}
+
+func TestPullAndCacheRebuildsLegacyCacheFromCachedOCI(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for pull tests")
+	}
+
+	img := testImage(t, map[string]string{"etc/issue": "fresh\n"})
+	cacheDir := t.TempDir()
+	initialPuller := Puller{
+		Fetch: func(context.Context, string) (v1.Image, error) {
+			return img, nil
+		},
+	}
+	result, err := initialPuller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:main")
+	if err != nil {
+		t.Fatalf("initial PullAndCache() error = %v", err)
+	}
+	if err := os.Remove(result.Layout.VersionPath); err != nil {
+		t.Fatalf("Remove(%q) error = %v", result.Layout.VersionPath, err)
+	}
+	if err := os.WriteFile(result.Layout.RootfsPath, []byte("stale-rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", result.Layout.RootfsPath, err)
+	}
+
+	rebuildPuller := Puller{
+		Fetch: func(context.Context, string) (v1.Image, error) {
+			t.Fatal("Fetch() should not be called when cached OCI tarball can rebuild the rootfs")
+			return nil, nil
+		},
+		ResolveDigest: func(context.Context, string) (string, error) {
+			data, err := os.ReadFile(result.Layout.DigestPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) error = %v", result.Layout.DigestPath, err)
+			}
+			return strings.TrimSpace(string(data)), nil
+		},
+	}
+
+	rebuilt, err := rebuildPuller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:main")
+	if err != nil {
+		t.Fatalf("rebuild PullAndCache() error = %v", err)
+	}
+	if got := debugfsRead(t, rebuilt.Layout.RootfsPath, "/etc/issue"); got != "fresh\n" {
+		t.Fatalf("rebuilt rootfs content = %q", got)
+	}
+	if data, err := os.ReadFile(rebuilt.Layout.VersionPath); err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", rebuilt.Layout.VersionPath, err)
+	} else if strings.TrimSpace(string(data)) != CurrentCacheVersion {
+		t.Fatalf("cache version = %q, want %q", strings.TrimSpace(string(data)), CurrentCacheVersion)
 	}
 }
 

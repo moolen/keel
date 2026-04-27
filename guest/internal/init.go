@@ -33,14 +33,15 @@ func Bootstrap(command []string, env []string, configured []guestfeatures.Config
 	if err := StartDNSForwarder(ctx); err != nil {
 		return err
 	}
-	if err := StartTCPProxy(ctx); err != nil {
+	interception, err := StartTCPProxy(ctx)
+	if err != nil {
 		return err
 	}
 	proxyEnv := proxyEnvironment(env)
 	if err := (guestfeatures.Runner{}).RunConfigured(ctx, configured, proxyEnv); err != nil {
 		return err
 	}
-	return ServePTY(command, cwd, proxyEnv, process)
+	return ServePTY(command, cwd, proxyEnv, process, interception)
 }
 
 func ensureResolverHostname() error {

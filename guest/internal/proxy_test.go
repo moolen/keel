@@ -2,6 +2,8 @@ package internal
 
 import (
 	"bufio"
+	"errors"
+	"math/bits"
 	"strings"
 	"testing"
 )
@@ -84,6 +86,94 @@ func TestShouldUseOriginalDestination(t *testing.T) {
 func TestTCPProxyListensOnAllInterfaces(t *testing.T) {
 	if got, want := tcpProxyAddr, "0.0.0.0:3128"; got != want {
 		t.Fatalf("tcpProxyAddr = %q, want %q", got, want)
+	}
+}
+
+func TestChooseTrafficInterceptionPrefersBPF(t *testing.T) {
+	want := proxyAwareOnlyInterception{}
+	bpfCalls := 0
+	nftCalls := 0
+
+	got := chooseTrafficInterception(interceptionFactory{
+		startBPF: func() (trafficInterception, error) {
+			bpfCalls++
+			return want, nil
+		},
+		startNFT: func() (trafficInterception, error) {
+			nftCalls++
+			return legacyRedirectInterception{}, nil
+		},
+	})
+
+	if got.mode() != proxyAwareOnlyMode {
+		t.Fatalf("mode = %q, want %q", got.mode(), proxyAwareOnlyMode)
+	}
+	if bpfCalls != 1 {
+		t.Fatalf("bpfCalls = %d, want 1", bpfCalls)
+	}
+	if nftCalls != 0 {
+		t.Fatalf("nftCalls = %d, want 0", nftCalls)
+	}
+}
+
+func TestChooseTrafficInterceptionFallsBackToNFT(t *testing.T) {
+	bpfErr := errors.New("bpf unavailable")
+	bpfCalls := 0
+	nftCalls := 0
+
+	got := chooseTrafficInterception(interceptionFactory{
+		startBPF: func() (trafficInterception, error) {
+			bpfCalls++
+			return nil, bpfErr
+		},
+		startNFT: func() (trafficInterception, error) {
+			nftCalls++
+			return legacyRedirectInterception{}, nil
+		},
+	})
+
+	if got.mode() != legacyRedirectMode {
+		t.Fatalf("mode = %q, want %q", got.mode(), legacyRedirectMode)
+	}
+	if bpfCalls != 1 {
+		t.Fatalf("bpfCalls = %d, want 1", bpfCalls)
+	}
+	if nftCalls != 1 {
+		t.Fatalf("nftCalls = %d, want 1", nftCalls)
+	}
+}
+
+func TestChooseTrafficInterceptionFallsBackToProxyAwareOnly(t *testing.T) {
+	got := chooseTrafficInterception(interceptionFactory{
+		startBPF: func() (trafficInterception, error) {
+			return nil, errors.New("bpf unavailable")
+		},
+		startNFT: func() (trafficInterception, error) {
+			return nil, errors.New("nft unavailable")
+		},
+	})
+
+	if got.mode() != proxyAwareOnlyMode {
+		t.Fatalf("mode = %q, want %q", got.mode(), proxyAwareOnlyMode)
+	}
+}
+
+func TestFormatBPFOriginalDestination(t *testing.T) {
+	got, err := formatBPFOriginalDestination(bpfOriginalDestination{
+		IP4:  bits.ReverseBytes32(0xcb00710a),
+		Port: uint32(bits.ReverseBytes16(443)),
+	})
+	if err != nil {
+		t.Fatalf("formatBPFOriginalDestination() error = %v", err)
+	}
+	if want := "203.0.113.10:443"; got != want {
+		t.Fatalf("destination = %q, want %q", got, want)
+	}
+}
+
+func TestStoredNetworkPortUint32(t *testing.T) {
+	if got, want := storedNetworkPortUint32(3128), uint32(bits.ReverseBytes16(3128)); got != want {
+		t.Fatalf("storedNetworkPortUint32(3128) = %#x, want %#x", got, want)
 	}
 }
 

@@ -180,11 +180,86 @@ func TestHostRunnerPreparesAssetsBeforeLaunch(t *testing.T) {
 	if prepareOpts.SourceDir != sourceDir {
 		t.Fatalf("prepare source dir = %q, want %q", prepareOpts.SourceDir, sourceDir)
 	}
-	if !strings.HasSuffix(machineAssets.RootfsPath, "/index.docker.io/library/ubuntu/24.04/rootfs.ext4") {
-		t.Fatalf("rootfs path = %q", machineAssets.RootfsPath)
+	if machineAssets.RootfsPath == rootfsPath {
+		t.Fatalf("rootfs path = %q, want runtime copy instead of cache image", machineAssets.RootfsPath)
+	}
+	if got, want := filepath.Base(machineAssets.RootfsPath), "rootfs.ext4"; got != want {
+		t.Fatalf("runtime rootfs base = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(machineAssets.RootfsPath, tempDir) {
+		t.Fatalf("runtime rootfs path = %q, want path under runtime dir %q", machineAssets.RootfsPath, tempDir)
 	}
 	if machineAssets.WorkspacePath == "" {
 		t.Fatal("workspace path should not be empty")
+	}
+}
+
+func TestHostRunnerRefreshesLegacyCachedRootfsWhenOCITarballExists(t *testing.T) {
+	tempDir := t.TempDir()
+	sourceDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = sourceDir
+	cfg.Workspace.Target = "/workspace"
+
+	layout, err := image.ResolveCacheLayout(tempDir, cfg.Image)
+	if err != nil {
+		t.Fatalf("ResolveCacheLayout() error = %v", err)
+	}
+	if err := os.MkdirAll(layout.Directory, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	for _, item := range []struct {
+		path string
+		data string
+	}{
+		{path: layout.RootfsPath, data: "stale-rootfs"},
+		{path: layout.OCIPath, data: "cached-oci"},
+	} {
+		if err := os.WriteFile(item.path, []byte(item.data), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", item.path, err)
+		}
+	}
+
+	pullCalls := 0
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, string) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		PullImage: func(_ context.Context, cacheDir, ref string) (image.PullResult, error) {
+			pullCalls++
+			if cacheDir != tempDir {
+				t.Fatalf("cacheDir = %q, want %q", cacheDir, tempDir)
+			}
+			if ref != cfg.Image {
+				t.Fatalf("ref = %q, want %q", ref, cfg.Image)
+			}
+			if err := os.WriteFile(layout.RootfsPath, []byte("refreshed-rootfs"), 0o644); err != nil {
+				return image.PullResult{}, err
+			}
+			if err := image.WriteCacheVersion(layout.VersionPath); err != nil {
+				return image.PullResult{}, err
+			}
+			return image.PullResult{Layout: layout}, nil
+		},
+		GuestAssets: func() (image.GuestAgentAssets, error) {
+			return image.GuestAgentAssets{}, nil
+		},
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return stubMachineRunner{}
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if pullCalls != 1 {
+		t.Fatalf("pullCalls = %d, want 1", pullCalls)
 	}
 }
 
@@ -385,8 +460,11 @@ func TestHostRunnerAutoPullsMissingRootfs(t *testing.T) {
 	if !pulled {
 		t.Fatal("expected missing rootfs to trigger image pull")
 	}
-	if machineAssets.RootfsPath != rootfsPath {
-		t.Fatalf("machineAssets.RootfsPath = %q, want %q", machineAssets.RootfsPath, rootfsPath)
+	if machineAssets.RootfsPath == rootfsPath {
+		t.Fatalf("machineAssets.RootfsPath = %q, want runtime copy distinct from pulled cache rootfs", machineAssets.RootfsPath)
+	}
+	if got, want := filepath.Base(machineAssets.RootfsPath), "rootfs.ext4"; got != want {
+		t.Fatalf("runtime rootfs base = %q, want %q", got, want)
 	}
 }
 
@@ -445,8 +523,8 @@ func TestHostRunnerRefreshesCachedGuestAgentWhenDigestChanges(t *testing.T) {
 	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if machineAssets.RootfsPath != layout.RootfsPath {
-		t.Fatalf("machineAssets.RootfsPath = %q, want %q", machineAssets.RootfsPath, layout.RootfsPath)
+	if machineAssets.RootfsPath == layout.RootfsPath {
+		t.Fatalf("machineAssets.RootfsPath = %q, want runtime copy distinct from cache rootfs", machineAssets.RootfsPath)
 	}
 	data, err := os.ReadFile(layout.AgentPath)
 	if err != nil {
@@ -454,6 +532,9 @@ func TestHostRunnerRefreshesCachedGuestAgentWhenDigestChanges(t *testing.T) {
 	}
 	if got, want := strings.TrimSpace(string(data)), guestAssets.Digest(); got != want {
 		t.Fatalf("agent digest = %q, want %q", got, want)
+	}
+	if got := debugfsReadCLI(t, machineAssets.RootfsPath, "/usr/local/bin/keel-agent"); got != "agent-new" {
+		t.Fatalf("runtime rootfs keel-agent = %q, want refreshed guest agent", got)
 	}
 }
 
@@ -513,10 +594,13 @@ func TestHostRunnerInjectsMITMGuestTrustAssets(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if got := debugfsReadCLI(t, layout.RootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt"); got == "" {
+	if got, ok := debugfsReadCLIIfPresent(t, layout.RootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt"); ok && got != "" {
+		t.Fatal("cache rootfs should remain untouched by runtime guest trust injection")
+	}
+	if got := debugfsReadCLI(t, filepath.Join(tempDir, "rootfs.ext4"), "/usr/local/share/ca-certificates/keel-local-ca.crt"); got == "" {
 		t.Fatal("expected injected mitm trust certificate")
 	}
-	if got := debugfsReadCLI(t, layout.RootfsPath, "/etc/keel/install-ca.sh"); !strings.Contains(got, "update-ca-certificates") {
+	if got := debugfsReadCLI(t, filepath.Join(tempDir, "rootfs.ext4"), "/etc/keel/install-ca.sh"); !strings.Contains(got, "update-ca-certificates") {
 		t.Fatalf("install-ca.sh content = %q", got)
 	}
 }
@@ -566,8 +650,11 @@ func TestHostRunnerAppliesConfiguredFeaturesBeforeLaunch(t *testing.T) {
 	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if gotRootfsPath != rootfsPath {
-		t.Fatalf("PrepareFeatures rootfs = %q, want %q", gotRootfsPath, rootfsPath)
+	if gotRootfsPath == rootfsPath {
+		t.Fatalf("PrepareFeatures rootfs = %q, want runtime copy distinct from cache rootfs", gotRootfsPath)
+	}
+	if got, want := filepath.Base(gotRootfsPath), "rootfs.ext4"; got != want {
+		t.Fatalf("PrepareFeatures runtime rootfs base = %q, want %q", got, want)
 	}
 	if len(gotFeatures) != 1 || gotFeatures[0].Name != "docker" {
 		t.Fatalf("PrepareFeatures features = %#v", gotFeatures)
@@ -671,50 +758,6 @@ func TestBuildNetworkServicesEnablesAuditMode(t *testing.T) {
 	})
 	if !httpDecision.Allowed || !httpDecision.WouldDeny {
 		t.Fatalf("http audit decision = %+v, want allowed+would_deny", httpDecision)
-	}
-}
-
-func TestHostRunnerWarnsWhenUsingDefaultKernelWithNetworkPolicy(t *testing.T) {
-	tempDir := t.TempDir()
-	cfg := config.Default()
-	cfg.Image = "ubuntu:24.04"
-	cfg.ImageCacheDir = tempDir
-	cfg.Workspace.Mount = t.TempDir()
-	cfg.Network.DNS.Allowed = []string{"github.com"}
-
-	var stderr bytes.Buffer
-	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
-	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	runner := HostRunner{
-		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
-			return vm.DefaultKernelPath(), nil
-		},
-		GuestAssets: stubGuestAssets,
-		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
-			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
-		},
-		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
-			return stubMachineRunner{}
-		},
-	}
-
-	err := runner.Run(context.Background(), RunRequest{
-		Config:  cfg,
-		Command: []string{"/bin/sh"},
-		Stderr:  &stderr,
-	})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if !strings.Contains(stderr.String(), "transparent tcp redirect is unavailable on the default kernel") {
-		t.Fatalf("stderr = %q, want transparent redirect warning", stderr.String())
 	}
 }
 
@@ -1320,4 +1363,21 @@ func debugfsReadCLI(t *testing.T, imagePath, target string) string {
 		return lines[1]
 	}
 	return text
+}
+
+func debugfsReadCLIIfPresent(t *testing.T, imagePath, target string) (string, bool) {
+	t.Helper()
+	cmd := exec.Command("debugfs", "-R", "cat "+target, imagePath)
+	output, err := cmd.CombinedOutput()
+	if strings.Contains(string(output), "File not found") {
+		return "", false
+	}
+	if err != nil {
+		t.Fatalf("debugfs read %s error = %v: %s", target, err, output)
+	}
+	text := string(output)
+	if lines := strings.SplitN(text, "\n", 2); len(lines) == 2 && strings.HasPrefix(lines[0], "debugfs ") {
+		return lines[1], true
+	}
+	return text, true
 }

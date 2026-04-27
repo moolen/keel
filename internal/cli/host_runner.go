@@ -140,7 +140,6 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	}
 	defer r.cleanupRuntimeAssets(assets)
 	req.Config = cfg
-	r.warnKernelNetworkLimitations(req, assets)
 	r.warnNetworkAuditMode(req)
 	factory := r.MachineFactory
 	if factory != nil {
@@ -270,20 +269,6 @@ func (r HostRunner) newProgressReporter(req RunRequest) progressReporter {
 		Interactive: r.ProgressEnabled,
 		Factory:     r.ProgressFactory,
 	})
-}
-
-func (r HostRunner) warnKernelNetworkLimitations(req RunRequest, assets vm.RuntimeAssets) {
-	if !networkPolicyConfigured(req.Config) {
-		return
-	}
-	if assets.KernelPath != vm.DefaultKernelPath() {
-		return
-	}
-	stderr := req.Stderr
-	if stderr == nil {
-		stderr = os.Stderr
-	}
-	_, _ = fmt.Fprintln(stderr, "warning: transparent tcp redirect is unavailable on the default kernel; direct tap egress remains blocked, so only proxy-aware clients will work until you provide a custom kernel with netfilter support")
 }
 
 func (r HostRunner) warnNetworkAuditMode(req RunRequest) {
@@ -427,7 +412,14 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 	}
 	progress.Step(startupPhase(4, "pulling oci image", "resolving cached rootfs and image layers"))
 	var guestAssets image.GuestAgentAssets
-	if _, err := os.Stat(layout.RootfsPath); os.IsNotExist(err) {
+	cacheReady, err := image.CacheReady(layout, false)
+	if err != nil && !os.IsNotExist(err) {
+		return vm.RuntimeAssets{}, err
+	}
+	_, rootfsErr := os.Stat(layout.RootfsPath)
+	_, ociErr := os.Stat(layout.OCIPath)
+	needsRefresh := !cacheReady && ociErr == nil
+	if os.IsNotExist(rootfsErr) || needsRefresh {
 		pull := r.PullImage
 		if pull == nil {
 			puller := image.Puller{
@@ -444,8 +436,8 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 			return vm.RuntimeAssets{}, err
 		}
 		layout = result.Layout
-	} else if err != nil {
-		return vm.RuntimeAssets{}, err
+	} else if rootfsErr != nil {
+		return vm.RuntimeAssets{}, rootfsErr
 	} else {
 		progress.Step(startupPhase(4, "pulling oci image", "resolving cached rootfs and image layers").Complete("using cached rootfs image"))
 	}
@@ -458,17 +450,6 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 	if err != nil {
 		return vm.RuntimeAssets{}, fmt.Errorf("load guest assets: %w", err)
 	}
-	if len(guestAssets.Binary) > 0 {
-		if _, err := image.EnsureGuestAgent(layout.RootfsPath, layout.AgentPath, guestAssets); err != nil {
-			return vm.RuntimeAssets{}, err
-		}
-	}
-	if err := image.InjectGuestTrust(layout.RootfsPath, guestTrust); err != nil {
-		return vm.RuntimeAssets{}, err
-	}
-	if err := r.prepareFeatures(layout.RootfsPath, cfg.Features); err != nil {
-		return vm.RuntimeAssets{}, err
-	}
 	runtimeDir, err := r.runtimeDir()
 	if err != nil {
 		return vm.RuntimeAssets{}, err
@@ -476,10 +457,25 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
+	runtimeRootfsPath := filepath.Join(runtimeDir, "rootfs.ext4")
+	if err := copyRuntimeRootfs(layout.RootfsPath, runtimeRootfsPath); err != nil {
+		return vm.RuntimeAssets{}, err
+	}
+	if len(guestAssets.Binary) > 0 {
+		if _, err := image.EnsureGuestAgent(runtimeRootfsPath, layout.AgentPath, guestAssets); err != nil {
+			return vm.RuntimeAssets{}, err
+		}
+	}
+	if err := image.InjectGuestTrust(runtimeRootfsPath, guestTrust); err != nil {
+		return vm.RuntimeAssets{}, err
+	}
+	if err := r.prepareFeatures(runtimeRootfsPath, cfg.Features); err != nil {
+		return vm.RuntimeAssets{}, err
+	}
 	workspacePath := filepath.Join(runtimeDir, "workspace.ext4")
 	assets := vm.RuntimeAssets{
 		KernelPath:    kernelPath,
-		RootfsPath:    layout.RootfsPath,
+		RootfsPath:    runtimeRootfsPath,
 		WorkspacePath: workspacePath,
 		MetadataPath:  filepath.Join(runtimeDir, "bootmeta.ext4"),
 		SocketPath:    filepath.Join(runtimeDir, "firecracker.sock"),
@@ -532,6 +528,37 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 
 	cleanupOnError = false
 	return assets, nil
+}
+
+func copyRuntimeRootfs(sourcePath, runtimePath string) error {
+	src, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open cached rootfs: %w", err)
+	}
+	defer func() {
+		_ = src.Close()
+	}()
+	info, err := src.Stat()
+	if err != nil {
+		return fmt.Errorf("stat cached rootfs: %w", err)
+	}
+	if err := os.Remove(runtimePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove runtime rootfs: %w", err)
+	}
+	dst, err := os.OpenFile(runtimePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return fmt.Errorf("create runtime rootfs: %w", err)
+	}
+	defer func() {
+		_ = dst.Close()
+	}()
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("copy runtime rootfs: %w", err)
+	}
+	if err := dst.Sync(); err != nil {
+		return fmt.Errorf("sync runtime rootfs: %w", err)
+	}
+	return nil
 }
 
 func guestTrustAssetsForConfig(cfg config.Config) (image.GuestTrustAssets, error) {
