@@ -1,6 +1,7 @@
 package image
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -286,7 +287,7 @@ func TestEnsureGuestAgentRepairsStaleBinaryWhenDigestMarkerMatches(t *testing.T)
 
 func debugfsRead(t *testing.T, imagePath, target string) string {
 	t.Helper()
-	cmd := exec.Command("debugfs", "-R", "cat "+target, imagePath)
+	cmd := exec.CommandContext(context.Background(), "debugfs", "-R", "cat "+target, imagePath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("debugfs read %s error = %v: %s", target, err, output)

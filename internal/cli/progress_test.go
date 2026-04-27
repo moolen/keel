@@ -82,19 +82,19 @@ func TestRenderStartupProgressIndeterminateOmitsPercentLabel(t *testing.T) {
 }
 
 func TestNewStartupProgressReporterFallsBackForDryRunNonTTYAndFactoryError(t *testing.T) {
-	reporter := newStartupProgressReporter(io.Discard, 10, startupProgressOptions{
+	reporter := newStartupProgressReporter(io.Discard, startupProgressOptions{
 		DryRun: true,
 	})
 	if _, ok := reporter.(nopProgressReporter); !ok {
 		t.Fatalf("dry-run reporter = %T, want nopProgressReporter", reporter)
 	}
 
-	reporter = newStartupProgressReporter(&bytes.Buffer{}, 10, startupProgressOptions{})
+	reporter = newStartupProgressReporter(&bytes.Buffer{}, startupProgressOptions{})
 	if _, ok := reporter.(nopProgressReporter); !ok {
 		t.Fatalf("non-tty reporter = %T, want nopProgressReporter", reporter)
 	}
 
-	reporter = newStartupProgressReporter(&bytes.Buffer{}, 10, startupProgressOptions{
+	reporter = newStartupProgressReporter(&bytes.Buffer{}, startupProgressOptions{
 		Interactive: func(io.Writer) bool { return true },
 		Factory: func(io.Writer, int) (progressReporter, error) {
 			return nil, errors.New("boom")
@@ -107,7 +107,7 @@ func TestNewStartupProgressReporterFallsBackForDryRunNonTTYAndFactoryError(t *te
 
 func TestNewStartupProgressReporterUsesFactoryWhenInteractive(t *testing.T) {
 	expected := &stubProgressReporter{}
-	reporter := newStartupProgressReporter(&bytes.Buffer{}, 10, startupProgressOptions{
+	reporter := newStartupProgressReporter(&bytes.Buffer{}, startupProgressOptions{
 		Interactive: func(io.Writer) bool { return true },
 		Factory: func(io.Writer, int) (progressReporter, error) {
 			return expected, nil

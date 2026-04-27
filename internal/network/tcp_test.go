@@ -494,7 +494,7 @@ func mustClientHelloBytesForTCP(t *testing.T, serverName string) []byte {
 			InsecureSkipVerify: true,
 			ServerName:         serverName,
 		}
-		_ = tls.Client(clientConn, cfg).Handshake()
+		_ = tls.Client(clientConn, cfg).HandshakeContext(context.Background())
 	}()
 
 	select {

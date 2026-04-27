@@ -1,6 +1,7 @@
 package features
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,7 +80,7 @@ func writeFileToRootfs(t *testing.T, rootfsPath, target, content string) {
 }
 
 func debugfsCommand(rootfsPath, command string) error {
-	cmd := exec.Command("debugfs", "-w", "-R", command, rootfsPath)
+	cmd := exec.CommandContext(context.Background(), "debugfs", "-w", "-R", command, rootfsPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil && !strings.Contains(string(output), "directory already exists") {
 		return err

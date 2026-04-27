@@ -134,7 +134,7 @@ func (vm *firecrackerVM) VSockListen(port uint32) (net.Listener, error) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	ln, err := net.Listen("unix", path)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("vsock listen port %d: %w", port, err)
 	}
@@ -149,12 +149,13 @@ func (vm *firecrackerVM) VSockConnect(port uint32) (net.Conn, error) {
 }
 
 func (vm *firecrackerVM) buildConfig() sdk.Config {
-	drives := []models.Drive{{
+	drives := make([]models.Drive, 0, 1+len(vm.cfg.ExtraDrives))
+	drives = append(drives, models.Drive{
 		DriveID:      sdk.String(vm.cfg.RootDrive.ID),
 		PathOnHost:   sdk.String(vm.cfg.RootDrive.Path),
 		IsRootDevice: sdk.Bool(true),
 		IsReadOnly:   sdk.Bool(vm.cfg.RootDrive.ReadOnly),
-	}}
+	})
 	for _, drive := range vm.cfg.ExtraDrives {
 		drives = append(drives, models.Drive{
 			DriveID:      sdk.String(drive.ID),

@@ -168,12 +168,12 @@ func loadCAIfUsable(certPath, keyPath, dir string) (*CA, bool, error) {
 
 	cert, err := parseCertificate(certPEM)
 	if err != nil {
-		return nil, false, nil
+		return nil, false, nil //nolint:nilerr // treat parse errors as unusable cert
 	}
 
 	key, err := parseSigner(keyPEM)
 	if err != nil {
-		return nil, false, nil
+		return nil, false, nil //nolint:nilerr // treat parse errors as unusable cert
 	}
 
 	if !certificateMatchesKey(cert, key) {
@@ -289,12 +289,12 @@ func loadIssuedCertIfUsable(certPath, keyPath, host string, caCert *x509.Certifi
 
 	cert, err := parseCertificate(certPEM)
 	if err != nil {
-		return nil, false, nil
+		return nil, false, nil //nolint:nilerr // treat parse errors as unusable cert
 	}
 
 	key, err := parseSigner(keyPEM)
 	if err != nil {
-		return nil, false, nil
+		return nil, false, nil //nolint:nilerr // treat parse errors as unusable cert
 	}
 
 	if !certificateMatchesKey(cert, key) {

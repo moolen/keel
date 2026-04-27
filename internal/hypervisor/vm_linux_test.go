@@ -12,7 +12,7 @@ import (
 
 func TestDialVSockPreservesPayloadAfterAck(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "firecracker.vsock")
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}

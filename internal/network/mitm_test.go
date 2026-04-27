@@ -87,7 +87,7 @@ func TestMITMProxyAllowsHTTPRequest(t *testing.T) {
 		ServerName: "api.github.com",
 		NextProtos: []string{"http/1.1"},
 	})
-	if err := clientTLS.Handshake(); err != nil {
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
 		t.Fatalf("client handshake error = %v", err)
 	}
 
@@ -186,7 +186,7 @@ func TestMITMProxyKeepsConnectionAliveAcrossRequests(t *testing.T) {
 		ServerName: "api.github.com",
 		NextProtos: []string{"http/1.1"},
 	})
-	if err := clientTLS.Handshake(); err != nil {
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
 		t.Fatalf("client handshake error = %v", err)
 	}
 
@@ -267,7 +267,7 @@ func TestMITMProxyDeniesHTTPRequest(t *testing.T) {
 		ServerName: "api.github.com",
 		NextProtos: []string{"http/1.1"},
 	})
-	if err := clientTLS.Handshake(); err != nil {
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
 		t.Fatalf("client handshake error = %v", err)
 	}
 
@@ -364,7 +364,7 @@ func TestMITMProxyAllowsDeniedHTTPRequestInAuditMode(t *testing.T) {
 		ServerName: "api.github.com",
 		NextProtos: []string{"http/1.1"},
 	})
-	if err := clientTLS.Handshake(); err != nil {
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
 		t.Fatalf("client handshake error = %v", err)
 	}
 
@@ -435,7 +435,7 @@ func TestMITMProxyDeniesWithoutSummaryCollector(t *testing.T) {
 		ServerName: "api.github.com",
 		NextProtos: []string{"http/1.1"},
 	})
-	if err := clientTLS.Handshake(); err != nil {
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
 		t.Fatalf("client handshake error = %v", err)
 	}
 
@@ -501,7 +501,7 @@ func TestMITMProxyReturnsBadGatewayOnUpstreamFailure(t *testing.T) {
 		ServerName: "api.github.com",
 		NextProtos: []string{"http/1.1"},
 	})
-	if err := clientTLS.Handshake(); err != nil {
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
 		t.Fatalf("client handshake error = %v", err)
 	}
 	if _, err := io.WriteString(clientTLS, "GET /repos/123 HTTP/1.1\r\nHost: api.github.com\r\nConnection: close\r\n\r\n"); err != nil {
@@ -612,7 +612,7 @@ func TestTCPProxyUsesMITMForEligibleTLSFlows(t *testing.T) {
 		ServerName: "api.github.com",
 		NextProtos: []string{"http/1.1"},
 	})
-	if err := clientTLS.Handshake(); err != nil {
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
 		t.Fatalf("client handshake error = %v", err)
 	}
 	if _, err := io.WriteString(clientTLS, "GET / HTTP/1.1\r\nHost: api.github.com\r\nConnection: close\r\n\r\n"); err != nil {
@@ -1299,7 +1299,7 @@ func mustUpstreamTLSServer(t *testing.T, host string, handler func(*http.Request
 func mustUpstreamHTTPServer(t *testing.T, handler func(*http.Request) *http.Response) net.Listener {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

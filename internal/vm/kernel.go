@@ -213,8 +213,8 @@ func (m KernelManager) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-func installedFirecrackerVersion(_ context.Context) (string, error) {
-	output, err := exec.Command("firecracker", "--version").CombinedOutput()
+func installedFirecrackerVersion(ctx context.Context) (string, error) {
+	output, err := exec.CommandContext(ctx, "firecracker", "--version").CombinedOutput()
 	if err != nil {
 		if isExecNotFound(err) {
 			return "", fmt.Errorf("firecracker is not installed or not in PATH; install Firecracker and ensure the `firecracker` binary is available")

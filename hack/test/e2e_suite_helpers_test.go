@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -190,7 +191,7 @@ func (p *e2eProject) writeConfig(t *testing.T, imageRef, body string) {
 func (p *e2eProject) run(t *testing.T, stdin string, args ...string) e2eRunResult {
 	t.Helper()
 
-	cmd := exec.Command(p.suite.artifacts.keelPath, args...)
+	cmd := exec.CommandContext(context.Background(), p.suite.artifacts.keelPath, args...)
 	cmd.Dir = p.dir
 	cmd.Env = p.env()
 	if stdin != "" {
@@ -213,7 +214,7 @@ func (p *e2eProject) run(t *testing.T, stdin string, args ...string) e2eRunResul
 func (p *e2eProject) runWithSignal(t *testing.T, after time.Duration, signal os.Signal, args ...string) e2eRunResult {
 	t.Helper()
 
-	cmd := exec.Command(p.suite.artifacts.keelPath, args...)
+	cmd := exec.CommandContext(context.Background(), p.suite.artifacts.keelPath, args...)
 	cmd.Dir = p.dir
 	cmd.Env = p.env()
 	var stdout bytes.Buffer
@@ -240,7 +241,7 @@ func (p *e2eProject) runWithSignal(t *testing.T, after time.Duration, signal os.
 func (p *e2eProject) runPTY(t *testing.T, input string, args ...string) e2eRunResult {
 	t.Helper()
 
-	cmd := exec.Command(p.suite.artifacts.keelPath, args...)
+	cmd := exec.CommandContext(context.Background(), p.suite.artifacts.keelPath, args...)
 	cmd.Dir = p.dir
 	cmd.Env = p.env()
 

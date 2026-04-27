@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	bootmeta "github.com/moolen/keel/internal/bootmanifest"
 	"github.com/moolen/keel/internal/config"
 	keelfeatures "github.com/moolen/keel/internal/features"
@@ -276,7 +278,7 @@ func (r HostRunner) newProgressReporter(req RunRequest) progressReporter {
 	if output == nil {
 		output = os.Stderr
 	}
-	return newStartupProgressReporter(output, startupPhaseTotal, startupProgressOptions{
+	return newStartupProgressReporter(output, startupProgressOptions{
 		DryRun:      req.Config.DryRun,
 		Interactive: r.ProgressEnabled,
 		Factory:     r.ProgressFactory,
@@ -292,16 +294,6 @@ func (r HostRunner) warnNetworkAuditMode(req RunRequest) {
 		stderr = os.Stderr
 	}
 	_, _ = fmt.Fprintln(stderr, "warning: network audit mode enabled; proxy policy denies will be allowed at runtime and reported as would_deny")
-}
-
-func networkPolicyConfigured(cfg config.Config) bool {
-	return len(cfg.Network.DNS.Allowed) > 0 ||
-		len(cfg.Network.DNS.Denied) > 0 ||
-		len(cfg.Network.TCP.AllowedCIDRs) > 0 ||
-		len(cfg.Network.TCP.DeniedCIDRs) > 0 ||
-		len(cfg.Network.TLS.AllowedSNI) > 0 ||
-		len(cfg.Network.TLS.DeniedSNI) > 0 ||
-		cfg.Network.DenyIfNoSNI
 }
 
 func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets vm.RuntimeAssets) (func(), *network.Summary, error) {
@@ -431,7 +423,8 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 	_, rootfsErr := os.Stat(layout.RootfsPath)
 	_, ociErr := os.Stat(layout.OCIPath)
 	needsRefresh := !cacheReady && ociErr == nil
-	if os.IsNotExist(rootfsErr) || needsRefresh {
+	switch {
+	case os.IsNotExist(rootfsErr) || needsRefresh:
 		pull := r.PullImage
 		if pull == nil {
 			puller := image.Puller{
@@ -448,9 +441,9 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 			return vm.RuntimeAssets{}, err
 		}
 		layout = result.Layout
-	} else if rootfsErr != nil {
+	case rootfsErr != nil:
 		return vm.RuntimeAssets{}, rootfsErr
-	} else {
+	default:
 		progress.Step(startupPhase(4, "pulling oci image", "resolving cached rootfs and image layers").Complete("using cached rootfs image"))
 	}
 	loadGuestAssets := r.GuestAssets

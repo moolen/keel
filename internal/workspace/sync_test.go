@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -94,7 +95,7 @@ func TestSyncImageAppliesChangesFromWorkspaceImage(t *testing.T) {
 	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
 		t.Skip("mkfs.ext4 is required for sync image tests")
 	}
-	if err := exec.Command("sudo", "-n", "true").Run(); err != nil {
+	if err := exec.CommandContext(context.Background(), "sudo", "-n", "true").Run(); err != nil {
 		t.Skip("passwordless sudo is required for sync image tests")
 	}
 

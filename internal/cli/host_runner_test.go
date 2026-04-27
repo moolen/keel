@@ -1566,7 +1566,7 @@ func TestHostRunnerStartServicesStartsDNSAndTCPProxies(t *testing.T) {
 	runner := HostRunner{}
 	instance := &stubHypervisorVM{
 		listen: func(port uint32) (net.Listener, error) {
-			return net.Listen("unix", filepath.Join(t.TempDir(), "vsock-"+strconv.Itoa(int(port))))
+			return (&net.ListenConfig{}).Listen(context.Background(), "unix", filepath.Join(t.TempDir(), "vsock-"+strconv.Itoa(int(port))))
 		},
 	}
 
@@ -1654,7 +1654,7 @@ func (*capturePTYInputVM) Stop(context.Context) error  { return nil }
 func (*capturePTYInputVM) Wait(context.Context) error  { return nil }
 
 func (*capturePTYInputVM) VSockListen(port uint32) (net.Listener, error) {
-	return net.Listen("unix", filepath.Join(os.TempDir(), "keel-vsock-"+strconv.Itoa(int(port))+"-"+strconv.FormatInt(time.Now().UnixNano(), 10)))
+	return (&net.ListenConfig{}).Listen(context.Background(), "unix", filepath.Join(os.TempDir(), "keel-vsock-"+strconv.Itoa(int(port))+"-"+strconv.FormatInt(time.Now().UnixNano(), 10)))
 }
 
 func (v *capturePTYInputVM) VSockConnect(uint32) (net.Conn, error) {
@@ -1722,7 +1722,7 @@ func writeCachedRootfsForHostRunnerTest(t *testing.T, cacheDir, imageRef string)
 
 func debugfsReadCLI(t *testing.T, imagePath, target string) string {
 	t.Helper()
-	cmd := exec.Command("debugfs", "-R", "cat "+target, imagePath)
+	cmd := exec.CommandContext(context.Background(), "debugfs", "-R", "cat "+target, imagePath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("debugfs read %s error = %v: %s", target, err, output)
@@ -1736,7 +1736,7 @@ func debugfsReadCLI(t *testing.T, imagePath, target string) string {
 
 func debugfsReadCLIIfPresent(t *testing.T, imagePath, target string) (string, bool) {
 	t.Helper()
-	cmd := exec.Command("debugfs", "-R", "cat "+target, imagePath)
+	cmd := exec.CommandContext(context.Background(), "debugfs", "-R", "cat "+target, imagePath)
 	output, err := cmd.CombinedOutput()
 	if strings.Contains(string(output), "File not found") {
 		return "", false

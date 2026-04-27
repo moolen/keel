@@ -56,7 +56,10 @@ func CacheReady(layout CacheLayout, requireAgent bool) (bool, error) {
 	}
 	for _, path := range required {
 		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
+		if err != nil {
+			return false, nil //nolint:nilerr // treat any stat error as cache miss
+		}
+		if info.IsDir() {
 			return false, nil
 		}
 	}

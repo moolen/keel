@@ -1,6 +1,7 @@
 package features
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -62,7 +63,7 @@ foundDockerd:
 }
 
 func rootfsContainsPath(rootfsPath, target string) bool {
-	cmd := exec.Command("debugfs", "-R", "stat "+target, rootfsPath)
+	cmd := exec.CommandContext(context.Background(), "debugfs", "-R", "stat "+target, rootfsPath)
 	output, err := cmd.CombinedOutput()
 	return err == nil && !strings.Contains(string(output), "File not found")
 }

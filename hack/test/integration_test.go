@@ -1,6 +1,7 @@
 package test
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -370,7 +371,7 @@ cat /tmp/out
 func startLocalHTTPServer(t *testing.T, body string) int {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatal(err)
 	}

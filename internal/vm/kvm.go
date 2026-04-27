@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -60,7 +61,7 @@ func repairKVMAccess() error {
 	if user == "" {
 		return fmt.Errorf("USER is not set")
 	}
-	cmd := exec.Command("sudo", "setfacl", "-m", fmt.Sprintf("u:%s:rw", user), "/dev/kvm")
+	cmd := exec.CommandContext(context.Background(), "sudo", "setfacl", "-m", fmt.Sprintf("u:%s:rw", user), "/dev/kvm")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, output)

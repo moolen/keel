@@ -66,7 +66,7 @@ func (p *MITMProxy) HandleTLS(ctx context.Context, downstream net.Conn, serverNa
 		ServerName:   serverName,
 	})
 
-	if err := terminated.Handshake(); err != nil {
+	if err := terminated.HandshakeContext(ctx); err != nil {
 		return err
 	}
 
@@ -151,7 +151,7 @@ func (p *MITMProxy) roundTrip(ctx context.Context, req *http.Request, upstreamAd
 		return nil, nil, err
 	}
 
-	upstreamConn := net.Conn(upstream)
+	upstreamConn := upstream
 	if upstreamTLS {
 		tlsConfig := cloneTLSConfig(p.TLSClientConfig)
 		name := normalizeHTTPHost(serverName)
@@ -169,7 +169,7 @@ func (p *MITMProxy) roundTrip(ctx context.Context, req *http.Request, upstreamAd
 		}
 
 		tlsUpstream := tls.Client(upstream, tlsConfig)
-		if err := tlsUpstream.Handshake(); err != nil {
+		if err := tlsUpstream.HandshakeContext(ctx); err != nil {
 			_ = upstream.Close()
 			return nil, nil, err
 		}

@@ -111,7 +111,7 @@ func newGuestNetwork(suffix string) (*GuestNetwork, error) {
 		tapName = tapName[:15]
 	}
 
-	subnetBase := byte(seed[2] & 0xfc)
+	subnetBase := seed[2] & 0xfc
 	subnetCIDR := fmt.Sprintf("172.22.%d.%d/30", seed[1], subnetBase)
 	gateway := net.ParseIP(fmt.Sprintf("172.22.%d.%d", seed[1], subnetBase+1))
 	guestIP := net.ParseIP(fmt.Sprintf("172.22.%d.%d", seed[1], subnetBase+2))

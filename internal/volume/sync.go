@@ -1,6 +1,7 @@
 package volume
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,13 +50,13 @@ func mountImageReadOnly(imagePath string) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
-	cmd := exec.Command("sudo", "mount", "-o", "loop,ro", imagePath, mountDir)
+	cmd := exec.CommandContext(context.Background(), "sudo", "mount", "-o", "loop,ro", imagePath, mountDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		_ = os.RemoveAll(mountDir)
 		return "", nil, fmt.Errorf("mount volume image: %w: %s", err, output)
 	}
 	cleanup := func() {
-		_ = exec.Command("sudo", "umount", mountDir).Run()
+		_ = exec.CommandContext(context.Background(), "sudo", "umount", mountDir).Run()
 		_ = os.RemoveAll(mountDir)
 	}
 	return mountDir, cleanup, nil

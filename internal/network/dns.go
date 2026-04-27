@@ -83,7 +83,7 @@ func (p DNSProxy) Serve(ctx context.Context, vsockPath string) error {
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "unix", socketPath)
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package runtimeenv
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -43,9 +44,9 @@ func resolveCommand(cfg config.EnvCommand) (string, error) {
 	var cmd *exec.Cmd
 	switch {
 	case len(cfg.Command) > 0:
-		cmd = exec.Command(cfg.Command[0], cfg.Command[1:]...)
+		cmd = exec.CommandContext(context.Background(), cfg.Command[0], cfg.Command[1:]...)
 	case cfg.Shell != "":
-		cmd = exec.Command("/bin/sh", "-lc", cfg.Shell)
+		cmd = exec.CommandContext(context.Background(), "/bin/sh", "-lc", cfg.Shell)
 	default:
 		return "", fmt.Errorf("missing command")
 	}

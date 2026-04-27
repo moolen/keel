@@ -199,7 +199,7 @@ func (p Puller) shouldRefreshCache(ctx context.Context, layout CacheLayout, ref 
 		}
 		img, loadErr := tarball.ImageFromPath(layout.OCIPath, nil)
 		if loadErr != nil {
-			return true, nil
+			return true, nil //nolint:nilerr // fail open: force re-pull when OCI image is unreadable
 		}
 		if writeErr := writeImageDigest(layout.DigestPath, img); writeErr != nil {
 			return false, writeErr
@@ -219,7 +219,7 @@ func (p Puller) shouldRefreshCache(ctx context.Context, layout CacheLayout, ref 
 	remoteDigest, err := resolveDigest(ctx, ref)
 	if err != nil {
 		// Fail open when a mutable tag cannot be revalidated.
-		return false, nil
+		return false, nil //nolint:nilerr
 	}
 	return strings.TrimSpace(string(data)) != strings.TrimSpace(remoteDigest), nil
 }

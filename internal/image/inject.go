@@ -2,6 +2,7 @@ package image
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -153,7 +154,7 @@ func EnsureGuestAgent(rootfsPath, digestPath string, assets GuestAgentAssets) (b
 }
 
 func debugfsWrite(rootfsPath, command string) error {
-	cmd := exec.Command("debugfs", "-w", "-R", command, rootfsPath)
+	cmd := exec.CommandContext(context.Background(), "debugfs", "-w", "-R", command, rootfsPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isExistingPathMkdir(output) {
@@ -212,7 +213,7 @@ func appendPEMToExt4FileIfPresent(rootfsPath, targetPath string, data []byte) er
 }
 
 func debugfsRemove(rootfsPath, target string) error {
-	cmd := exec.Command("debugfs", "-w", "-R", "rm "+target, rootfsPath)
+	cmd := exec.CommandContext(context.Background(), "debugfs", "-w", "-R", "rm "+target, rootfsPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("debugfs remove %q: %w: %s", target, err, output)
@@ -249,7 +250,7 @@ func debugfsReadFile(rootfsPath, target string) ([]byte, error) {
 		_ = os.Remove(tempPath)
 	}()
 
-	cmd := exec.Command("debugfs", "-R", fmt.Sprintf("dump %s %s", target, tempPath), rootfsPath)
+	cmd := exec.CommandContext(context.Background(), "debugfs", "-R", fmt.Sprintf("dump %s %s", target, tempPath), rootfsPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("debugfs dump %q: %w: %s", target, err, output)

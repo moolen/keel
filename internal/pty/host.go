@@ -12,8 +12,9 @@ import (
 	"time"
 
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
-	"github.com/moolen/keel/internal/vsock"
 	"golang.org/x/term"
+
+	"github.com/moolen/keel/internal/vsock"
 )
 
 type ExitCodeError struct {

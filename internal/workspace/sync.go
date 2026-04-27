@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -117,14 +118,14 @@ func mountImageReadOnly(imagePath string) (string, func(), error) {
 	var mountErr error
 	var mountOutput []byte
 	for _, options := range []string{"loop,ro", "loop"} {
-		cmd := exec.Command("sudo", "mount", "-o", options, imagePath, mountDir)
+		cmd := exec.CommandContext(context.Background(), "sudo", "mount", "-o", options, imagePath, mountDir)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			mountErr = fmt.Errorf("mount -o %s: %w", options, err)
 			mountOutput = output
 			continue
 		}
 		cleanup := func() {
-			_ = exec.Command("sudo", "umount", mountDir).Run()
+			_ = exec.CommandContext(context.Background(), "sudo", "umount", mountDir).Run()
 			_ = os.RemoveAll(mountDir)
 		}
 		return mountDir, cleanup, nil

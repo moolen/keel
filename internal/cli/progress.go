@@ -254,7 +254,7 @@ func progressPulseCmd() tea.Cmd {
 	})
 }
 
-func newStartupProgressReporter(output io.Writer, total int, opts startupProgressOptions) progressReporter {
+func newStartupProgressReporter(output io.Writer, opts startupProgressOptions) progressReporter {
 	if opts.DryRun {
 		return nopProgressReporter{}
 	}
@@ -269,7 +269,7 @@ func newStartupProgressReporter(output io.Writer, total int, opts startupProgres
 	if factory == nil {
 		factory = newBubbleProgressReporter
 	}
-	reporter, err := factory(output, total)
+	reporter, err := factory(output, startupPhaseTotal)
 	if err != nil {
 		return nopProgressReporter{}
 	}

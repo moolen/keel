@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -48,11 +49,11 @@ func PrepareImage(opts PrepareOptions) (PrepareResult, error) {
 	if err := os.MkdirAll(filepath.Dir(opts.ImagePath), 0o755); err != nil {
 		return PrepareResult{}, err
 	}
-	if err := exec.Command("truncate", "-s", fmt.Sprintf("%dM", opts.SizeMB), opts.ImagePath).Run(); err != nil {
+	if err := exec.CommandContext(context.Background(), "truncate", "-s", fmt.Sprintf("%dM", opts.SizeMB), opts.ImagePath).Run(); err != nil {
 		return PrepareResult{}, fmt.Errorf("create sparse image: %w", err)
 	}
 
-	cmd := exec.Command("mkfs.ext4", "-q", "-F", "-L", opts.Label, "-d", stagedDir, opts.ImagePath)
+	cmd := exec.CommandContext(context.Background(), "mkfs.ext4", "-q", "-F", "-L", opts.Label, "-d", stagedDir, opts.ImagePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return PrepareResult{}, fmt.Errorf("mkfs.ext4: %w: %s", err, output)
 	}

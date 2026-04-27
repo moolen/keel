@@ -35,7 +35,7 @@ func (p TCPProxy) Serve(ctx context.Context, vsockPath string) error {
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "unix", socketPath)
 	if err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ func parseDestination(destination string) (net.IP, int, error) {
 	if ip == nil {
 		return nil, 0, fmt.Errorf("destination host %q is not an IP address", host)
 	}
-	port, err := net.LookupPort("tcp", portValue)
+	port, err := net.DefaultResolver.LookupPort(context.Background(), "tcp", portValue)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -193,11 +193,11 @@ func readTLSClientPreface(conn net.Conn) ([]byte, string, error, error) {
 		return nil, "", nil, err
 	}
 	recordLength := int(binary.BigEndian.Uint16(header[3:5]))
-	body := make([]byte, recordLength)
-	if _, err := io.ReadFull(conn, body); err != nil {
+	data := make([]byte, 5+recordLength)
+	copy(data, header)
+	if _, err := io.ReadFull(conn, data[5:]); err != nil {
 		return nil, "", nil, err
 	}
-	data := append(header, body...)
 	sni, parseErr := parseClientHelloSNI(data)
 	return data, sni, parseErr, nil
 }

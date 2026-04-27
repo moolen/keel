@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -115,7 +116,7 @@ func runCmd(t *testing.T, dir string, name string, args ...string) {
 
 func runCmdEnv(t *testing.T, dir string, extraEnv []string, name string, args ...string) {
 	t.Helper()
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), extraEnv...)
 	var output bytes.Buffer

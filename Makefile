@@ -1,11 +1,15 @@
 GO ?= go
+GOLANGCI_LINT_VERSION ?= v2.11.4
 
-.PHONY: test lint build guest-agent kernel
+.PHONY: test lint install-lint build guest-agent kernel
 
 test:
 	$(GO) test ./...
 
-lint:
+install-lint:
+	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+lint: install-lint
 	golangci-lint run ./...
 	cd guest && golangci-lint run ./...
 

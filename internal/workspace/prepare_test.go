@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"net"
 	"os"
 	"os/exec"
@@ -48,7 +49,7 @@ func TestPrepareWorkspaceImageSkipsSockets(t *testing.T) {
 
 	sourceDir := t.TempDir()
 	socketPath := filepath.Join(sourceDir, "agent.sock")
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
 	if err != nil {
 		t.Skipf("unix sockets unavailable: %v", err)
 	}
