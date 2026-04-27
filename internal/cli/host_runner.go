@@ -148,7 +148,6 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	}
 	defer r.cleanupRuntimeAssets(assets)
 	req.Config = cfg
-	r.warnNetworkAuditMode(req)
 	factory := r.MachineFactory
 	if factory != nil {
 		startServices := r.ServiceStarter
@@ -165,6 +164,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		machine := factory(cfg, assets)
 		progress.Step(startupPhase(10, "booting vm and attaching terminal", "handing off to guest process"))
 		progress.Stop()
+		r.warnNetworkAuditMode(req)
 		runErr := machine.Run(ctx)
 		syncErr := r.syncWorkspace(req, assets)
 		switch {
@@ -228,10 +228,11 @@ func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *
 	defer r.printNetworkSummary(req, summary)
 
 	progress.Step(startupPhase(10, "booting vm and attaching terminal", "handing off to guest process"))
+	progress.Stop()
+	r.warnNetworkAuditMode(req)
 	if err := instance.Start(ctx); err != nil {
 		return err
 	}
-	progress.Stop()
 	if err := machine.AttachPTYToVM(ctx, instance); err != nil {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()

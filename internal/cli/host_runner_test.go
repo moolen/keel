@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -1228,6 +1229,68 @@ func TestHostRunnerReportsStartupPhasesInOrderAndStopsBeforeMachineRun(t *testin
 	}
 	if !reflect.DeepEqual(events, wantPhases) {
 		t.Fatalf("events = %#v, want %#v", events, wantPhases)
+	}
+}
+
+func TestHostRunnerStopsProgressBeforeAuditWarningAndMachineRun(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	cfg.Network.Audit = true
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var (
+		events []string
+		stderr bytes.Buffer
+	)
+	reporter := &recordingProgressReporter{
+		onStep: func(step startupStep) { events = append(events, step.Title) },
+		onStop: func() { events = append(events, "progress-stop") },
+	}
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		GuestAssets: stubGuestAssets,
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		ServiceStarter: func(context.Context, config.Config, vm.RuntimeAssets) (func(), *network.Summary, error) {
+			return func() {}, network.NewSummary(), nil
+		},
+		ProgressEnabled: func(io.Writer) bool { return true },
+		ProgressFactory: func(io.Writer, int) (progressReporter, error) { return reporter, nil },
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return machineRunnerFunc(func(context.Context) error {
+				events = append(events, "machine-run")
+				if got := events[len(events)-2]; got != "progress-stop" {
+					return fmt.Errorf("event before machine-run = %q, want progress-stop", got)
+				}
+				if !strings.Contains(stderr.String(), "warning: network audit mode enabled") {
+					return fmt.Errorf("stderr = %q, want audit warning", stderr.String())
+				}
+				return nil
+			})
+		},
+	}
+
+	err := runner.Run(context.Background(), RunRequest{
+		Config:  cfg,
+		Command: []string{"/bin/sh"},
+		Stderr:  &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
 }
 
