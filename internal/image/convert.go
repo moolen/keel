@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 )
 
+const mib = int64(1024 * 1024)
+
 type CreateRootfsOptions struct {
 	SourceDir string
 	ImagePath string
@@ -26,8 +28,12 @@ func CreateRootfsImage(opts CreateRootfsOptions) (CreateRootfsResult, error) {
 	if opts.ImagePath == "" {
 		return CreateRootfsResult{}, fmt.Errorf("image path is required")
 	}
-	if opts.SizeMB <= 0 {
-		opts.SizeMB = 2048
+	estimatedSizeMB, err := estimateRootfsSizeMB(opts.SourceDir)
+	if err != nil {
+		return CreateRootfsResult{}, err
+	}
+	if opts.SizeMB <= 0 || estimatedSizeMB > opts.SizeMB {
+		opts.SizeMB = estimatedSizeMB
 	}
 	if opts.Label == "" {
 		opts.Label = "rootfs"
@@ -52,4 +58,32 @@ func CreateRootfsImage(opts CreateRootfsOptions) (CreateRootfsResult, error) {
 		ImagePath: opts.ImagePath,
 		SizeBytes: info.Size(),
 	}, nil
+}
+
+func estimateRootfsSizeMB(sourceDir string) (int, error) {
+	var totalBytes int64
+	var entryCount int64
+
+	err := filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		entryCount++
+		if info.Mode().IsRegular() {
+			totalBytes += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("walk rootfs source: %w", err)
+	}
+
+	// Reserve slack for ext4 metadata, block/inode overhead, and image growth.
+	overheadBytes := totalBytes/4 + 512*mib + entryCount*4096
+	sizeBytes := totalBytes + overheadBytes
+	sizeMB := int((sizeBytes + mib - 1) / mib)
+	if sizeMB < 2048 {
+		sizeMB = 2048
+	}
+	return sizeMB, nil
 }

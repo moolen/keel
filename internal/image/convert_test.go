@@ -38,3 +38,22 @@ func TestCreateRootfsImage(t *testing.T) {
 		t.Fatalf("result.SizeBytes = %d, want %d", result.SizeBytes, info.Size())
 	}
 }
+
+func TestEstimateRootfsSizeMBAddsHeadroomForLargeImages(t *testing.T) {
+	sourceDir := t.TempDir()
+	largeFile := filepath.Join(sourceDir, "payload.bin")
+	if err := os.WriteFile(largeFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.Truncate(largeFile, 1900*1024*1024); err != nil {
+		t.Fatalf("Truncate() error = %v", err)
+	}
+
+	sizeMB, err := estimateRootfsSizeMB(sourceDir)
+	if err != nil {
+		t.Fatalf("estimateRootfsSizeMB() error = %v", err)
+	}
+	if sizeMB <= 2048 {
+		t.Fatalf("estimateRootfsSizeMB() = %d, want > 2048", sizeMB)
+	}
+}
