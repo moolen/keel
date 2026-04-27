@@ -31,54 +31,6 @@ func TestLoadConfigReadsKernelSource(t *testing.T) {
 	}
 }
 
-func TestLoadConfigPrefersKernelPathOverLegacyKernelPath(t *testing.T) {
-	homeDir := t.TempDir()
-	projectDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-
-	mkdirAll(t, filepath.Join(homeDir, ".config", "keel"))
-	writeFile(t, filepath.Join(homeDir, ".config", "keel", "config.yaml"), "kernel_path: /opt/keel/legacy-vmlinux\n")
-	writeFile(t, filepath.Join(projectDir, "keel.yaml"), "kernel:\n  path: /opt/keel/project-vmlinux\n")
-
-	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if got, want := cfg.Kernel.Path, "/opt/keel/project-vmlinux"; got != want {
-		t.Fatalf("cfg.Kernel.Path = %q, want %q", got, want)
-	}
-	if got := cfg.KernelPath; got != "" {
-		t.Fatalf("cfg.KernelPath = %q, want empty after normalization", got)
-	}
-	if got := cfg.Kernel.Source; got != "" {
-		t.Fatalf("cfg.Kernel.Source = %q, want empty when kernel.path is set", got)
-	}
-}
-
-func TestLoadConfigSourceOverridesInheritedKernelPath(t *testing.T) {
-	homeDir := t.TempDir()
-	projectDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-
-	mkdirAll(t, filepath.Join(homeDir, ".config", "keel"))
-	writeFile(t, filepath.Join(homeDir, ".config", "keel", "config.yaml"), "kernel_path: /opt/keel/legacy-vmlinux\n")
-	writeFile(t, filepath.Join(projectDir, "keel.yaml"), "kernel:\n  source: release://v0.2.0\n")
-
-	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if got := cfg.Kernel.Path; got != "" {
-		t.Fatalf("cfg.Kernel.Path = %q, want empty when kernel.source is set", got)
-	}
-	if got := cfg.KernelPath; got != "" {
-		t.Fatalf("cfg.KernelPath = %q, want empty after normalization", got)
-	}
-	if got, want := cfg.Kernel.Source, "release://v0.2.0"; got != want {
-		t.Fatalf("cfg.Kernel.Source = %q, want %q", got, want)
-	}
-}
-
 func TestLoadMergedConfig(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
@@ -91,8 +43,9 @@ func TestLoadMergedConfig(t *testing.T) {
 
 	writeFile(t, filepath.Join(globalDir, "config.yaml"), `
 image_cache_dir: ~/.cache/custom-keel/images
-kernel_path: /opt/keel/vmlinux
-default_resources:
+kernel:
+  path: /opt/keel/vmlinux
+resources:
   vcpu: 3
   memory_mb: 3072
   disk_mb: 6144
@@ -137,9 +90,6 @@ env:
 	}
 	if cfg.Kernel.Path != "/opt/keel/vmlinux" {
 		t.Fatalf("cfg.Kernel.Path = %q", cfg.Kernel.Path)
-	}
-	if cfg.KernelPath != "" {
-		t.Fatalf("cfg.KernelPath = %q, want empty after normalization", cfg.KernelPath)
 	}
 	if cfg.Kernel.Source != "" {
 		t.Fatalf("cfg.Kernel.Source = %q, want empty when kernel.path is set", cfg.Kernel.Source)

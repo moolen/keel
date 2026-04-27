@@ -18,11 +18,6 @@ func Default() Config {
 			MemoryMB: 2048,
 			DiskMB:   4096,
 		},
-		DefaultResources: ResourceConfig{
-			VCPU:     2,
-			MemoryMB: 2048,
-			DiskMB:   4096,
-		},
 		Workspace: WorkspaceConfig{
 			Mount:       ".",
 			Target:      "/workspace",

@@ -69,6 +69,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     xz-utils \
     zip \
+    vim \
  && rm -rf /var/lib/apt/lists/*
 
 RUN set -euo pipefail \

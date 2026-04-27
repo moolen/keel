@@ -102,9 +102,7 @@ func Load(opts LoadOptions) (Config, error) {
 	}
 
 	cfg.ImageCacheDir = expandHome(cfg.ImageCacheDir)
-	cfg.KernelPath = expandHome(cfg.KernelPath)
 	cfg.Kernel.Path = expandHome(cfg.Kernel.Path)
-	normalizeKernelConfig(&cfg)
 	cfg.Workspace.Mount = resolveHostPath(wd, cfg.Workspace.Mount)
 	for i := range cfg.Volumes {
 		cfg.Volumes[i].Source = resolveHostPath(wd, cfg.Volumes[i].Source)
@@ -157,11 +155,6 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	if src.ImageCacheDir != "" {
 		dst.ImageCacheDir = src.ImageCacheDir
 	}
-	if src.KernelPath != "" {
-		dst.KernelPath = src.KernelPath
-		dst.Kernel.Path = src.KernelPath
-		dst.Kernel.Source = ""
-	}
 	if src.Kernel.Path != "" {
 		dst.Kernel.Path = src.Kernel.Path
 		dst.Kernel.Source = ""
@@ -169,7 +162,6 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	if src.Kernel.Source != "" {
 		dst.Kernel.Source = src.Kernel.Source
 		dst.Kernel.Path = ""
-		dst.KernelPath = ""
 	}
 	if src.Resources.VCPU != 0 {
 		dst.Resources.VCPU = src.Resources.VCPU
@@ -182,22 +174,6 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	}
 	if src.Resources.RootDiskMB != 0 {
 		dst.Resources.RootDiskMB = src.Resources.RootDiskMB
-	}
-	if src.DefaultResources.VCPU != 0 {
-		dst.DefaultResources.VCPU = src.DefaultResources.VCPU
-		dst.Resources.VCPU = src.DefaultResources.VCPU
-	}
-	if src.DefaultResources.MemoryMB != 0 {
-		dst.DefaultResources.MemoryMB = src.DefaultResources.MemoryMB
-		dst.Resources.MemoryMB = src.DefaultResources.MemoryMB
-	}
-	if src.DefaultResources.DiskMB != 0 {
-		dst.DefaultResources.DiskMB = src.DefaultResources.DiskMB
-		dst.Resources.DiskMB = src.DefaultResources.DiskMB
-	}
-	if src.DefaultResources.RootDiskMB != 0 {
-		dst.DefaultResources.RootDiskMB = src.DefaultResources.RootDiskMB
-		dst.Resources.RootDiskMB = src.DefaultResources.RootDiskMB
 	}
 	if src.Workspace.Mount != "" {
 		dst.Workspace.Mount = src.Workspace.Mount
@@ -364,18 +340,6 @@ func resolveHostPath(base, path string) string {
 		return path
 	}
 	return filepath.Join(base, path)
-}
-
-func normalizeKernelConfig(cfg *Config) {
-	if cfg.Kernel.Path != "" {
-		cfg.Kernel.Source = ""
-		cfg.KernelPath = ""
-		return
-	}
-	cfg.KernelPath = ""
-	if cfg.Kernel.Source == "" {
-		cfg.Kernel.Source = "release://latest"
-	}
 }
 
 func validateConfig(cfg Config) error {

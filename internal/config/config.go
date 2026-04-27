@@ -1,12 +1,10 @@
 package config
 
 type Config struct {
-	Image            string            `yaml:"image"`
-	ImageCacheDir    string            `yaml:"image_cache_dir"`
-	KernelPath       string            `yaml:"kernel_path,omitempty"`
-	DefaultResources ResourceConfig    `yaml:"default_resources"`
-	Kernel           KernelConfig      `yaml:"kernel"`
-	Resources        ResourceConfig    `yaml:"resources"`
+	Image         string         `yaml:"image"`
+	ImageCacheDir string         `yaml:"image_cache_dir"`
+	Kernel        KernelConfig   `yaml:"kernel"`
+	Resources     ResourceConfig `yaml:"resources"`
 	Workspace        WorkspaceConfig   `yaml:"workspace"`
 	Volumes          []VolumeConfig    `yaml:"volumes"`
 	Network          NetworkConfig     `yaml:"network"`
