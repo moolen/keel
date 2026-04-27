@@ -58,11 +58,12 @@ func TestKernelManagerEnsureReleaseSources(t *testing.T) {
 			source: "release://latest",
 			setup: func(t *testing.T, cacheDir string, api *releaseAPIFixture) {
 				t.Helper()
-				writeCachedKernel(t, filepath.Join(cacheDir, "release-latest", arch), "cached-kernel", KernelCacheMetadata{
+				writeCachedKernel(t, filepath.Join(cacheDir, "release-latest", arch), api.kernelBodies["v0.2.0"], KernelCacheMetadata{
 					SourceKind:  "release-latest",
 					ResolvedTag: "v0.2.0",
 					KernelURL:   api.assetURL("v0.2.0"),
 					SHA256URL:   api.shaURL("v0.2.0"),
+					SHA256:      checksumHex(api.kernelBodies["v0.2.0"]),
 				})
 			},
 			assert: func(t *testing.T, path string, err error, cacheDir string, api *releaseAPIFixture) {
@@ -70,15 +71,15 @@ func TestKernelManagerEnsureReleaseSources(t *testing.T) {
 				if err != nil {
 					t.Fatalf("EnsureConfig() error = %v", err)
 				}
-				assertFileContents(t, path, "cached-kernel")
+				assertFileContents(t, path, api.kernelBodies["v0.2.0"])
 				if api.hits["latest"] != 1 {
 					t.Fatalf("latest release lookups = %d, want 1", api.hits["latest"])
 				}
 				if api.hits["asset:v0.2.0"] != 0 {
 					t.Fatalf("kernel asset downloads = %d, want 0", api.hits["asset:v0.2.0"])
 				}
-				if api.hits["sha:v0.2.0"] != 0 {
-					t.Fatalf("checksum downloads = %d, want 0", api.hits["sha:v0.2.0"])
+				if api.hits["sha:v0.2.0"] != 1 {
+					t.Fatalf("checksum downloads = %d, want 1", api.hits["sha:v0.2.0"])
 				}
 			},
 		},
@@ -107,6 +108,39 @@ func TestKernelManagerEnsureReleaseSources(t *testing.T) {
 				}
 				if api.hits["asset:v0.2.0"] != 1 {
 					t.Fatalf("kernel asset downloads = %d, want 1", api.hits["asset:v0.2.0"])
+				}
+			},
+		},
+		{
+			name:   "release://latest refreshes when asset changes under same tag",
+			source: "release://latest",
+			setup: func(t *testing.T, cacheDir string, api *releaseAPIFixture) {
+				t.Helper()
+				api.latestTag = "v0.2.0"
+				api.kernelBodies["v0.2.0"] = "kernel-v0.2.0-repacked"
+				writeCachedKernel(t, filepath.Join(cacheDir, "release-latest", arch), "kernel-v0.2.0", KernelCacheMetadata{
+					SourceKind:  "release-latest",
+					ResolvedTag: "v0.2.0",
+					KernelURL:   api.assetURL("v0.2.0"),
+					SHA256URL:   api.shaURL("v0.2.0"),
+					SHA256:      checksumHex("kernel-v0.2.0"),
+				})
+			},
+			assert: func(t *testing.T, path string, err error, cacheDir string, api *releaseAPIFixture) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("EnsureConfig() error = %v", err)
+				}
+				assertFileContents(t, path, "kernel-v0.2.0-repacked")
+				meta := readKernelMetadata(t, filepath.Join(cacheDir, "release-latest", arch, "metadata.json"))
+				if got, want := meta.SHA256, checksumHex("kernel-v0.2.0-repacked"); got != want {
+					t.Fatalf("metadata SHA256 = %q, want %q", got, want)
+				}
+				if api.hits["asset:v0.2.0"] != 1 {
+					t.Fatalf("kernel asset downloads = %d, want 1", api.hits["asset:v0.2.0"])
+				}
+				if api.hits["sha:v0.2.0"] != 2 {
+					t.Fatalf("checksum downloads = %d, want 2", api.hits["sha:v0.2.0"])
 				}
 			},
 		},
@@ -281,6 +315,46 @@ func TestKernelManagerEnsureURLSourceRevalidatesWithETag(t *testing.T) {
 	}
 }
 
+func TestKernelManagerEnsureURLSourceRedownloadsWhenMetadataIsMissing(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			_, _ = w.Write([]byte("kernel-v1"))
+			return
+		}
+		_, _ = w.Write([]byte("kernel-v2"))
+	}))
+	defer server.Close()
+
+	cacheDir := t.TempDir()
+	manager := KernelManager{
+		HTTPClient: server.Client(),
+		CacheDir:   cacheDir,
+		Arch:       "x86_64",
+	}
+
+	path, err := manager.EnsureSource(context.Background(), server.URL+"/vmlinux")
+	if err != nil {
+		t.Fatalf("EnsureSource() first call error = %v", err)
+	}
+	assertFileContents(t, path, "kernel-v1")
+
+	layout := cacheLayoutForURL(cacheDir, server.URL+"/vmlinux", "x86_64")
+	if err := os.Remove(layout.metadataPath); err != nil {
+		t.Fatalf("Remove(%q) error = %v", layout.metadataPath, err)
+	}
+
+	path, err = manager.EnsureSource(context.Background(), server.URL+"/vmlinux")
+	if err != nil {
+		t.Fatalf("EnsureSource() second call error = %v", err)
+	}
+	assertFileContents(t, path, "kernel-v2")
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
 type releaseAPIFixture struct {
 	server       *httptest.Server
 	hits         map[string]int
@@ -423,6 +497,11 @@ func assertFileContents(t *testing.T, path, want string) {
 func checksumLine(body, name string) string {
 	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:]) + "  " + name + "\n"
+}
+
+func checksumHex(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
 }
 
 func pathTag(path string) string {

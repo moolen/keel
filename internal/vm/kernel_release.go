@@ -113,7 +113,7 @@ func (m KernelManager) ensureReleaseSource(ctx context.Context, source string) (
 	if err != nil {
 		return "", err
 	}
-	return m.downloadReleaseIntoCache(ctx, layout, asset, "release-tag")
+	return m.downloadReleaseIntoCache(ctx, layout, asset, "release-tag", nil)
 }
 
 func (m KernelManager) ensureLatestRelease(ctx context.Context, layout kernelCacheLayout, arch string) (string, error) {
@@ -129,10 +129,44 @@ func (m KernelManager) ensureLatestRelease(ctx context.Context, layout kernelCac
 	}
 
 	if hasCachedKernel && metadataErr == nil && metadata.ResolvedTag == asset.Tag {
-		return layout.kernelPath, nil
+		switch {
+		case metadata.SHA256URL != "":
+			expectedChecksum, checksumErr := m.downloadExpectedChecksum(ctx, asset.SHA256URL)
+			if checksumErr == nil {
+				if metadata.SHA256 == expectedChecksum {
+					return layout.kernelPath, nil
+				}
+				if verifyErr := verifyFileChecksum(layout.kernelPath, expectedChecksum); verifyErr == nil {
+					metadata.SHA256 = expectedChecksum
+					metadata.KernelURL = asset.KernelURL
+					metadata.SHA256URL = asset.SHA256URL
+					if writeErr := writeKernelCacheMetadata(layout.metadataPath, metadata); writeErr == nil {
+						return layout.kernelPath, nil
+					}
+				}
+			}
+		case metadata.ETag != "" || metadata.LastModified != "":
+			headers := make(http.Header)
+			if metadata.ETag != "" {
+				headers.Set("If-None-Match", metadata.ETag)
+			}
+			if metadata.LastModified != "" {
+				headers.Set("If-Modified-Since", metadata.LastModified)
+			}
+			path, downloadErr := m.downloadReleaseIntoCache(ctx, layout, asset, "release-latest", headers)
+			if downloadErr == nil {
+				return path, nil
+			}
+			if !errors.Is(downloadErr, errKernelChecksumMismatch) {
+				return layout.kernelPath, nil
+			}
+			return "", downloadErr
+		default:
+			return layout.kernelPath, nil
+		}
 	}
 
-	path, err := m.downloadReleaseIntoCache(ctx, layout, asset, "release-latest")
+	path, err := m.downloadReleaseIntoCache(ctx, layout, asset, "release-latest", nil)
 	if err != nil {
 		if hasCachedKernel && !errors.Is(err, errKernelChecksumMismatch) {
 			return layout.kernelPath, nil
@@ -158,7 +192,10 @@ func (m KernelManager) ensureURLSource(ctx context.Context, source string) (stri
 
 	metadata, err := loadKernelCacheMetadata(layout.metadataPath)
 	if err != nil {
-		return layout.kernelPath, nil
+		return m.downloadURLIntoCache(ctx, layout, source, KernelCacheMetadata{
+			SourceKind: "url",
+			KernelURL:  source,
+		}, nil)
 	}
 	if metadata.ETag == "" && metadata.LastModified == "" {
 		return layout.kernelPath, nil
@@ -178,14 +215,14 @@ func (m KernelManager) ensureURLSource(ctx context.Context, source string) (stri
 	}, headers)
 }
 
-func (m KernelManager) downloadReleaseIntoCache(ctx context.Context, layout kernelCacheLayout, asset ReleaseKernelAsset, sourceKind string) (string, error) {
+func (m KernelManager) downloadReleaseIntoCache(ctx context.Context, layout kernelCacheLayout, asset ReleaseKernelAsset, sourceKind string, headers http.Header) (string, error) {
 	metadata := KernelCacheMetadata{
 		SourceKind:  sourceKind,
 		ResolvedTag: asset.Tag,
 		KernelURL:   asset.KernelURL,
 		SHA256URL:   asset.SHA256URL,
 	}
-	return m.downloadURLIntoCache(ctx, layout, asset.KernelURL, metadata, nil)
+	return m.downloadURLIntoCache(ctx, layout, asset.KernelURL, metadata, headers)
 }
 
 func (m KernelManager) downloadURLIntoCache(ctx context.Context, layout kernelCacheLayout, sourceURL string, metadata KernelCacheMetadata, headers http.Header) (string, error) {
@@ -230,10 +267,10 @@ func (m KernelManager) downloadURLIntoCache(ctx context.Context, layout kernelCa
 	metadata.ETag = result.etag
 	metadata.LastModified = result.lastModified
 
-	if err := os.Rename(tempPath, layout.kernelPath); err != nil {
+	if err := writeKernelCacheMetadata(layout.metadataPath, metadata); err != nil {
 		return "", err
 	}
-	if err := writeKernelCacheMetadata(layout.metadataPath, metadata); err != nil {
+	if err := os.Rename(tempPath, layout.kernelPath); err != nil {
 		return "", err
 	}
 	return layout.kernelPath, nil
