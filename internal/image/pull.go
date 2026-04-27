@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -25,6 +26,7 @@ type Puller struct {
 	ResolveDigest func(context.Context, string) (string, error)
 	GuestInit     func() (GuestAgentAssets, error)
 	GuestTrust    GuestTrustAssets
+	Progress      func(PullProgress)
 }
 
 type PullResult struct {
@@ -35,6 +37,26 @@ type CachedImage struct {
 	Reference  string
 	RootfsPath string
 	SizeBytes  int64
+}
+
+type PullPhase string
+
+const (
+	PullPhaseResolve     PullPhase = "resolving image metadata"
+	PullPhaseDownload    PullPhase = "downloading image layers"
+	PullPhaseExtract     PullPhase = "extracting filesystem"
+	PullPhaseBuildRootfs PullPhase = "building rootfs image"
+	PullPhaseReady       PullPhase = "image ready"
+)
+
+func (p PullPhase) String() string {
+	return string(p)
+}
+
+type PullProgress struct {
+	Phase   PullPhase
+	Current int64
+	Total   int64
 }
 
 func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullResult, error) {
@@ -62,6 +84,7 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 	if fetch == nil {
 		fetch = fetchRemoteImage
 	}
+	p.reportProgress(PullProgress{Phase: PullPhaseResolve})
 	img, err := fetch(ctx, ref)
 	if err != nil {
 		return PullResult{}, err
@@ -71,7 +94,28 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 	if err != nil {
 		return PullResult{}, err
 	}
-	if err := tarball.WriteToFile(layout.OCIPath, parsedRef, img); err != nil {
+	progressUpdates := make(chan v1.Update, 32)
+	var progressWG sync.WaitGroup
+	if p.Progress != nil {
+		progressWG.Add(1)
+		go func() {
+			defer progressWG.Done()
+			for update := range progressUpdates {
+				if update.Total <= 0 && update.Complete <= 0 {
+					continue
+				}
+				p.reportProgress(PullProgress{
+					Phase:   PullPhaseDownload,
+					Current: update.Complete,
+					Total:   update.Total,
+				})
+			}
+		}()
+	}
+	err = tarball.WriteToFile(layout.OCIPath, parsedRef, img, tarball.WithProgress(progressUpdates))
+	close(progressUpdates)
+	progressWG.Wait()
+	if err != nil {
 		return PullResult{}, fmt.Errorf("write image tarball: %w", err)
 	}
 	if err := writeImageDigest(layout.DigestPath, img); err != nil {
@@ -86,9 +130,11 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 		_ = os.RemoveAll(tempDir)
 	}()
 
+	p.reportProgress(PullProgress{Phase: PullPhaseExtract})
 	if err := extractFilesystem(mutate.Extract(img), tempDir); err != nil {
 		return PullResult{}, err
 	}
+	p.reportProgress(PullProgress{Phase: PullPhaseBuildRootfs})
 	if _, err := CreateRootfsImage(CreateRootfsOptions{
 		SourceDir: tempDir,
 		ImagePath: layout.RootfsPath,
@@ -108,6 +154,7 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 	if err := InjectGuestTrust(layout.RootfsPath, p.GuestTrust); err != nil {
 		return PullResult{}, err
 	}
+	p.reportProgress(PullProgress{Phase: PullPhaseReady, Current: 1, Total: 1})
 
 	return PullResult{Layout: layout}, nil
 }
@@ -135,6 +182,12 @@ func (p Puller) shouldRefreshCache(ctx context.Context, layout CacheLayout, ref 
 		return false, nil
 	}
 	return strings.TrimSpace(string(data)) != strings.TrimSpace(remoteDigest), nil
+}
+
+func (p Puller) reportProgress(update PullProgress) {
+	if p.Progress != nil {
+		p.Progress(update)
+	}
 }
 
 func cacheLayoutReady(layout CacheLayout, requireAgent bool) bool {

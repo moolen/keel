@@ -58,6 +58,45 @@ func startupPhase(index int, title, detail string) startupStep {
 	}
 }
 
+func kernelProgressStep(update vm.KernelProgress) startupStep {
+	step := startupPhase(3, "ensuring kernel", "resolving guest kernel image")
+	switch {
+	case update.Total > 0:
+		return step.WithProgress(update.Current, update.Total, fmt.Sprintf("%s (%s / %s)", update.Phase, formatBytes(update.Current), formatBytes(update.Total)))
+	case update.Current > 0:
+		return step.Complete(update.Phase)
+	case update.Phase != "":
+		step.Detail = update.Phase
+	}
+	return step
+}
+
+func imagePullProgressStep(update image.PullProgress) startupStep {
+	step := startupPhase(4, "pulling oci image", "resolving cached rootfs and image layers")
+	switch update.Phase {
+	case image.PullPhaseResolve:
+		return step.WithProgress(5, 100, update.Phase.String())
+	case image.PullPhaseDownload:
+		current := int64(10)
+		if update.Total > 0 {
+			current += (update.Current * 70) / update.Total
+			return step.WithProgress(current, 100, fmt.Sprintf("%s (%s / %s)", update.Phase.String(), formatBytes(update.Current), formatBytes(update.Total)))
+		}
+		return step.WithProgress(current, 100, update.Phase.String())
+	case image.PullPhaseExtract:
+		return step.WithProgress(85, 100, update.Phase.String())
+	case image.PullPhaseBuildRootfs:
+		return step.WithProgress(95, 100, update.Phase.String())
+	case image.PullPhaseReady:
+		return step.Complete(update.Phase.String())
+	default:
+		if update.Phase != "" {
+			step.Detail = update.Phase.String()
+		}
+		return step
+	}
+}
+
 func (r HostRunner) runtimeDir() (string, error) {
 	if r.RuntimeDir != "" {
 		return r.RuntimeDir, nil
@@ -365,7 +404,11 @@ func (r HostRunner) printNetworkSummary(req RunRequest, summary *network.Summary
 func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progress progressReporter) (vm.RuntimeAssets, error) {
 	ensureKernel := r.EnsureKernel
 	if ensureKernel == nil {
-		manager := vm.KernelManager{}
+		manager := vm.KernelManager{
+			Progress: func(update vm.KernelProgress) {
+				progress.Step(kernelProgressStep(update))
+			},
+		}
 		ensureKernel = manager.Ensure
 	}
 	progress.Step(startupPhase(3, "ensuring kernel", "resolving guest kernel image"))
@@ -390,6 +433,9 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 			puller := image.Puller{
 				GuestInit:  defaultGuestAgentAssets,
 				GuestTrust: guestTrust,
+				Progress: func(update image.PullProgress) {
+					progress.Step(imagePullProgressStep(update))
+				},
 			}
 			pull = puller.PullAndCache
 		}
@@ -400,6 +446,8 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 		layout = result.Layout
 	} else if err != nil {
 		return vm.RuntimeAssets{}, err
+	} else {
+		progress.Step(startupPhase(4, "pulling oci image", "resolving cached rootfs and image layers").Complete("using cached rootfs image"))
 	}
 	loadGuestAssets := r.GuestAssets
 	if loadGuestAssets == nil {

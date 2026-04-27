@@ -1202,11 +1202,16 @@ func (f machineRunnerFunc) Run(ctx context.Context) error {
 }
 
 type recordingProgressReporter struct {
-	onStep func(startupStep)
-	onStop func()
+	onStep    func(startupStep)
+	onStop    func()
+	lastTitle string
 }
 
 func (r *recordingProgressReporter) Step(step startupStep) {
+	if step.Title == r.lastTitle {
+		return
+	}
+	r.lastTitle = step.Title
 	if r.onStep != nil {
 		r.onStep(step)
 	}

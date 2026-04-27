@@ -26,6 +26,13 @@ type KernelManager struct {
 	BucketBaseURL      string
 	Arch               string
 	FirecrackerVersion func(context.Context) (string, error)
+	Progress           func(KernelProgress)
+}
+
+type KernelProgress struct {
+	Phase   string
+	Current int64
+	Total   int64
 }
 
 type listBucketResult struct {
@@ -173,6 +180,11 @@ func (m KernelManager) download(ctx context.Context, url, destPath string) error
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download kernel: unexpected status %s", resp.Status)
 	}
+	m.reportProgress(KernelProgress{
+		Phase:   "downloading kernel",
+		Current: 0,
+		Total:   max(resp.ContentLength, 0),
+	})
 	file, err := os.OpenFile(destPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
 	if err != nil {
 		return err
@@ -180,7 +192,13 @@ func (m KernelManager) download(ctx context.Context, url, destPath string) error
 	defer func() {
 		_ = file.Close()
 	}()
-	if _, err := io.Copy(file, resp.Body); err != nil {
+	if _, err := copyWithProgress(file, resp.Body, func(written int64) {
+		m.reportProgress(KernelProgress{
+			Phase:   "downloading kernel",
+			Current: written,
+			Total:   max(resp.ContentLength, 0),
+		})
+	}); err != nil {
 		return err
 	}
 	return nil
@@ -223,6 +241,39 @@ func compareDottedVersions(a, b string) int {
 		}
 	}
 	return 0
+}
+
+func (m KernelManager) reportProgress(update KernelProgress) {
+	if m.Progress != nil {
+		m.Progress(update)
+	}
+}
+
+func copyWithProgress(dst io.Writer, src io.Reader, report func(int64)) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		nr, readErr := src.Read(buf)
+		if nr > 0 {
+			nw, writeErr := dst.Write(buf[:nr])
+			written += int64(nw)
+			if report != nil {
+				report(written)
+			}
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if nw != nr {
+				return written, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
 }
 
 func dottedPart(parts []string, index int) int {

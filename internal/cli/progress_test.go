@@ -23,40 +23,61 @@ func (s *stubProgressReporter) Stop() {
 
 func TestRenderStartupProgressCompactWithoutDetail(t *testing.T) {
 	output := renderStartupProgress(startupProgressTitle, 16, startupStep{
-		Index: 3,
-		Total: 8,
-		Title: "preparing workspace image",
+		Index:   3,
+		Total:   8,
+		Title:   "preparing workspace image",
+		Current: 3,
+		Target:  8,
+	})
+
+	lines := strings.Split(output, "\n")
+	if got, want := len(lines), 2; got != want {
+		t.Fatalf("len(lines) = %d, want %d: %q", got, want, output)
+	}
+	if got, want := lines[0], "keel preparing vm [3/8] preparing workspace image"; got != want {
+		t.Fatalf("header = %q, want %q", got, want)
+	}
+	if !strings.Contains(lines[1], "38%") {
+		t.Fatalf("progress line = %q, want percent", lines[1])
+	}
+	if strings.Count(lines[1], "%") != 1 {
+		t.Fatalf("progress line = %q, want a single percent label", lines[1])
+	}
+}
+
+func TestRenderStartupProgressCompactWithDetail(t *testing.T) {
+	output := renderStartupProgress(startupProgressTitle, 16, startupStep{
+		Index:   6,
+		Total:   10,
+		Title:   "preparing workspace image",
+		Detail:  "pulling files and creating ext4 snapshot",
+		Current: 6,
+		Target:  10,
 	})
 
 	lines := strings.Split(output, "\n")
 	if got, want := len(lines), 3; got != want {
 		t.Fatalf("len(lines) = %d, want %d: %q", got, want, output)
 	}
-	if !strings.Contains(lines[0], "3/8") {
-		t.Fatalf("header = %q, want step counter", lines[0])
-	}
-	if !strings.Contains(lines[1], "38%") {
-		t.Fatalf("progress line = %q, want percent", lines[1])
-	}
-	if got, want := lines[2], "preparing workspace image"; got != want {
-		t.Fatalf("step line = %q, want %q", got, want)
+	if got, want := lines[2], "pulling files and creating ext4 snapshot"; got != want {
+		t.Fatalf("detail line = %q, want %q", got, want)
 	}
 }
 
-func TestRenderStartupProgressCompactWithDetail(t *testing.T) {
+func TestRenderStartupProgressIndeterminateOmitsPercentLabel(t *testing.T) {
 	output := renderStartupProgress(startupProgressTitle, 16, startupStep{
-		Index:  6,
+		Index:  4,
 		Total:  10,
-		Title:  "preparing workspace image",
-		Detail: "pulling files and creating ext4 snapshot",
+		Title:  "pulling oci image",
+		Detail: "resolving cached rootfs and image layers",
 	})
 
 	lines := strings.Split(output, "\n")
-	if got, want := len(lines), 4; got != want {
+	if got, want := len(lines), 3; got != want {
 		t.Fatalf("len(lines) = %d, want %d: %q", got, want, output)
 	}
-	if got, want := lines[3], "pulling files and creating ext4 snapshot"; got != want {
-		t.Fatalf("detail line = %q, want %q", got, want)
+	if strings.Contains(lines[1], "%") {
+		t.Fatalf("progress line = %q, want no percent label for indeterminate steps", lines[1])
 	}
 }
 

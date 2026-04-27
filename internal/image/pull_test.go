@@ -70,6 +70,49 @@ func TestPullAndCacheMaterializesArtifacts(t *testing.T) {
 	}
 }
 
+func TestPullAndCacheReportsProgress(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for pull tests")
+	}
+
+	img := testImage(t, map[string]string{
+		"etc/issue": strings.Repeat("keel\n", 64),
+	})
+	cacheDir := t.TempDir()
+	var updates []PullProgress
+	puller := Puller{
+		Fetch: func(context.Context, string) (v1.Image, error) {
+			return img, nil
+		},
+		Progress: func(update PullProgress) {
+			updates = append(updates, update)
+		},
+	}
+
+	if _, err := puller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:test"); err != nil {
+		t.Fatalf("PullAndCache() error = %v", err)
+	}
+
+	if len(updates) == 0 {
+		t.Fatal("expected pull progress updates, got none")
+	}
+	if updates[0].Phase != PullPhaseResolve {
+		t.Fatalf("first phase = %q, want %q", updates[0].Phase, PullPhaseResolve)
+	}
+	if !containsPullPhase(updates, PullPhaseDownload) {
+		t.Fatalf("updates = %#v, want download progress", updates)
+	}
+	if !containsPullPhase(updates, PullPhaseExtract) {
+		t.Fatalf("updates = %#v, want extract progress", updates)
+	}
+	if !containsPullPhase(updates, PullPhaseBuildRootfs) {
+		t.Fatalf("updates = %#v, want rootfs build progress", updates)
+	}
+	if updates[len(updates)-1].Phase != PullPhaseReady {
+		t.Fatalf("last phase = %q, want %q", updates[len(updates)-1].Phase, PullPhaseReady)
+	}
+}
+
 func TestPullAndCacheReturnsCachedLayoutWithoutFetching(t *testing.T) {
 	cacheDir := t.TempDir()
 	layout, err := ResolveCacheLayout(cacheDir, "ghcr.io/moolen/keel:test")
@@ -386,4 +429,13 @@ func newTarArchive(t *testing.T, entries []tarEntry) []byte {
 		t.Fatalf("Close() error = %v", err)
 	}
 	return buf.Bytes()
+}
+
+func containsPullPhase(updates []PullProgress, phase PullPhase) bool {
+	for _, update := range updates {
+		if update.Phase == phase {
+			return true
+		}
+	}
+	return false
 }

@@ -11,6 +11,7 @@ import (
 
 func TestKernelManagerEnsureDownloadsLatestKernel(t *testing.T) {
 	destPath := t.TempDir() + "/vmlinux"
+	var progress []KernelProgress
 	manager := KernelManager{
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			switch {
@@ -32,6 +33,9 @@ func TestKernelManagerEnsureDownloadsLatestKernel(t *testing.T) {
 			return "Firecracker v1.15.1", nil
 		},
 		Arch: "x86_64",
+		Progress: func(update KernelProgress) {
+			progress = append(progress, update)
+		},
 	}
 
 	gotPath, err := manager.Ensure(context.Background(), destPath)
@@ -47,6 +51,15 @@ func TestKernelManagerEnsureDownloadsLatestKernel(t *testing.T) {
 	}
 	if string(data) != "kernel-bytes" {
 		t.Fatalf("kernel data = %q, want kernel-bytes", string(data))
+	}
+	if len(progress) < 2 {
+		t.Fatalf("progress = %#v, want multiple updates", progress)
+	}
+	if got := progress[0].Phase; got != "downloading kernel" {
+		t.Fatalf("progress[0].Phase = %q, want downloading kernel", got)
+	}
+	if got := progress[len(progress)-1].Current; got != int64(len("kernel-bytes")) {
+		t.Fatalf("last progress current = %d, want %d", got, len("kernel-bytes"))
 	}
 }
 
