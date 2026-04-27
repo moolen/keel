@@ -230,6 +230,10 @@ resources:
   # Workspace image size in MiB.
   disk_mb: 4096
 
+  # Optional minimum size for the VM root disk in MiB. If unset, Keel uses
+  # the image-derived rootfs size.
+  # root_disk_mb: 8192
+
 workspace:
   # Host path copied into the VM workspace image before boot.
   mount: .

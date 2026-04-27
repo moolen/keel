@@ -195,6 +195,68 @@ func TestHostRunnerPreparesAssetsBeforeLaunch(t *testing.T) {
 	}
 }
 
+func TestHostRunnerExpandsRuntimeRootfsWhenRootDiskConfigured(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for rootfs resize tests")
+	}
+	if _, err := exec.LookPath("resize2fs"); err != nil {
+		t.Skip("resize2fs is required for rootfs resize tests")
+	}
+
+	tempDir := t.TempDir()
+	sourceDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = sourceDir
+	cfg.Resources.RootDiskMB = 2304
+
+	rootfsSource := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootfsSource, "issue"), []byte("keel\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if _, err := image.CreateRootfsImage(image.CreateRootfsOptions{
+		SourceDir: rootfsSource,
+		ImagePath: rootfsPath,
+		SizeMB:    2048,
+	}); err != nil {
+		t.Fatalf("CreateRootfsImage() error = %v", err)
+	}
+
+	var gotRootfsSize int64
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		GuestAssets: stubGuestAssets,
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		MachineFactory: func(_ config.Config, assets vm.RuntimeAssets) machineRunner {
+			info, err := os.Stat(assets.RootfsPath)
+			if err != nil {
+				t.Fatalf("Stat(%q) error = %v", assets.RootfsPath, err)
+			}
+			gotRootfsSize = info.Size()
+			return stubMachineRunner{}
+		},
+	}
+
+	if err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got, want := gotRootfsSize, int64(cfg.Resources.RootDiskMB)*1024*1024; got < want {
+		t.Fatalf("runtime rootfs size = %d, want at least %d", got, want)
+	}
+}
+
 func TestHostRunnerDefaultKernelResolutionPrefersKernelPath(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := config.Default()

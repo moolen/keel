@@ -180,6 +180,9 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	if src.Resources.DiskMB != 0 {
 		dst.Resources.DiskMB = src.Resources.DiskMB
 	}
+	if src.Resources.RootDiskMB != 0 {
+		dst.Resources.RootDiskMB = src.Resources.RootDiskMB
+	}
 	if src.DefaultResources.VCPU != 0 {
 		dst.DefaultResources.VCPU = src.DefaultResources.VCPU
 		dst.Resources.VCPU = src.DefaultResources.VCPU
@@ -191,6 +194,10 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	if src.DefaultResources.DiskMB != 0 {
 		dst.DefaultResources.DiskMB = src.DefaultResources.DiskMB
 		dst.Resources.DiskMB = src.DefaultResources.DiskMB
+	}
+	if src.DefaultResources.RootDiskMB != 0 {
+		dst.DefaultResources.RootDiskMB = src.DefaultResources.RootDiskMB
+		dst.Resources.RootDiskMB = src.DefaultResources.RootDiskMB
 	}
 	if src.Workspace.Mount != "" {
 		dst.Workspace.Mount = src.Workspace.Mount

@@ -96,6 +96,7 @@ default_resources:
   vcpu: 3
   memory_mb: 3072
   disk_mb: 6144
+  root_disk_mb: 8192
 network:
   dns:
     allowed:
@@ -143,7 +144,7 @@ env:
 	if cfg.Kernel.Source != "" {
 		t.Fatalf("cfg.Kernel.Source = %q, want empty when kernel.path is set", cfg.Kernel.Source)
 	}
-	if cfg.Resources.VCPU != 3 || cfg.Resources.MemoryMB != 3072 || cfg.Resources.DiskMB != 6144 {
+	if cfg.Resources.VCPU != 3 || cfg.Resources.MemoryMB != 3072 || cfg.Resources.DiskMB != 6144 || cfg.Resources.RootDiskMB != 8192 {
 		t.Fatalf("unexpected resources: %+v", cfg.Resources)
 	}
 	if cfg.Workspace.Target != "/src" || !cfg.Workspace.SyncBack || !cfg.Workspace.SyncConfirm {

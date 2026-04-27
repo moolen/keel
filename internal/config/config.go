@@ -25,9 +25,10 @@ type KernelConfig struct {
 }
 
 type ResourceConfig struct {
-	VCPU     int `yaml:"vcpu"`
-	MemoryMB int `yaml:"memory_mb"`
-	DiskMB   int `yaml:"disk_mb"`
+	VCPU       int `yaml:"vcpu"`
+	MemoryMB   int `yaml:"memory_mb"`
+	DiskMB     int `yaml:"disk_mb"`
+	RootDiskMB int `yaml:"root_disk_mb,omitempty"`
 }
 
 type WorkspaceConfig struct {

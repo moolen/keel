@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -477,6 +478,9 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 	if err := copyRuntimeRootfs(layout.RootfsPath, runtimeRootfsPath); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
+	if err := ensureRuntimeRootfsSize(runtimeRootfsPath, cfg.Resources.RootDiskMB); err != nil {
+		return vm.RuntimeAssets{}, err
+	}
 	if len(guestAssets.Binary) > 0 {
 		if _, err := image.EnsureGuestAgent(runtimeRootfsPath, layout.AgentPath, guestAssets); err != nil {
 			return vm.RuntimeAssets{}, err
@@ -574,6 +578,27 @@ func copyRuntimeRootfs(sourcePath, runtimePath string) error {
 	}
 	if err := dst.Sync(); err != nil {
 		return fmt.Errorf("sync runtime rootfs: %w", err)
+	}
+	return nil
+}
+
+func ensureRuntimeRootfsSize(imagePath string, minSizeMB int) error {
+	if minSizeMB <= 0 {
+		return nil
+	}
+	info, err := os.Stat(imagePath)
+	if err != nil {
+		return fmt.Errorf("stat runtime rootfs: %w", err)
+	}
+	targetBytes := int64(minSizeMB) * 1024 * 1024
+	if info.Size() >= targetBytes {
+		return nil
+	}
+	if err := exec.Command("truncate", "-s", fmt.Sprintf("%dM", minSizeMB), imagePath).Run(); err != nil {
+		return fmt.Errorf("grow runtime rootfs image: %w", err)
+	}
+	if output, err := exec.Command("resize2fs", imagePath).CombinedOutput(); err != nil {
+		return fmt.Errorf("resize runtime rootfs filesystem: %w: %s", err, output)
 	}
 	return nil
 }

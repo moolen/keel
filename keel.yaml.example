@@ -7,6 +7,8 @@ resources:
   vcpu: 2
   memory_mb: 2048
   disk_mb: 4096
+  # optional: grow the VM root disk beyond the image default
+  # root_disk_mb: 8192
 
 workspace:
   mount: .
