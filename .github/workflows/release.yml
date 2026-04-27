@@ -18,6 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DEVTOOLS_IMAGE: ghcr.io/moolen/keel-devtools
+      KERNEL_VERSION: 6.1.167
+      KERNEL_ARCH: x86_64
+      KERNEL_CACHE_DIR: ${{ github.workspace }}/hack/kernel/.cache
+      KERNEL_BUILD_DIR: ${{ github.workspace }}/hack/kernel/.cache/build-x86_64-6.1.167
+      KERNEL_ARTIFACT_BASENAME: keel-vmlinux-x86_64
     steps:
       - uses: actions/checkout@v5
         with:
@@ -105,6 +110,43 @@ jobs:
             echo "next_tag=${next_tag}"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Install kernel build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            dwarves \
+            flex \
+            libelf-dev \
+            libssl-dev
+
+      - name: Restore kernel build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.KERNEL_CACHE_DIR }}/linux-${{ env.KERNEL_VERSION }}.tar.xz
+            ${{ env.KERNEL_CACHE_DIR }}/linux-${{ env.KERNEL_VERSION }}
+            ${{ env.KERNEL_BUILD_DIR }}
+          key: ${{ runner.os }}-kernel-${{ env.KERNEL_ARCH }}-${{ env.KERNEL_VERSION }}-${{ hashFiles('hack/kernel/build-kernel.sh', 'hack/kernel/firecracker-6.1-x86_64.config', 'hack/kernel/keel-netfilter.fragment') }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-${{ env.KERNEL_ARCH }}-${{ env.KERNEL_VERSION }}-
+
+      - name: Build release kernel
+        shell: bash
+        env:
+          ARCH: ${{ env.KERNEL_ARCH }}
+          ARTIFACT_BASENAME: ${{ env.KERNEL_ARTIFACT_BASENAME }}
+          BUILD_DIR: ${{ env.KERNEL_BUILD_DIR }}
+          CACHE_DIR: ${{ env.KERNEL_CACHE_DIR }}
+          OUT_DIR: ${{ github.workspace }}/dist/release
+        run: |
+          set -euo pipefail
+          bash ./hack/kernel/build-kernel.sh
+
       - name: Build keel
         shell: bash
         run: |
@@ -150,5 +192,8 @@ jobs:
             --target "${{ github.sha }}" \
             --title "${{ steps.version.outputs.next_tag }}" \
             --generate-notes \
+            dist/release/keel-vmlinux-x86_64 \
+            dist/release/keel-vmlinux-x86_64.sha256 \
+            dist/release/keel-vmlinux-x86_64.config \
             dist/release/keel-linux-amd64 \
             dist/release/keel-agent-linux-amd64
