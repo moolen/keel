@@ -20,7 +20,8 @@ type Config struct {
 }
 
 type KernelConfig struct {
-	Path string `yaml:"path"`
+	Path   string `yaml:"path"`
+	Source string `yaml:"source"`
 }
 
 type ResourceConfig struct {

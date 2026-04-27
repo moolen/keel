@@ -7,6 +7,48 @@ import (
 	"testing"
 )
 
+func TestDefaultConfigUsesReleaseManagedKernelSource(t *testing.T) {
+	cfg := Default()
+
+	if got, want := cfg.Kernel.Source, "release://latest"; got != want {
+		t.Fatalf("cfg.Kernel.Source = %q, want %q", got, want)
+	}
+}
+
+func TestLoadConfigReadsKernelSource(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "keel.yaml")
+	if err := os.WriteFile(configPath, []byte("kernel:\n  source: release://v0.2.0\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got, want := cfg.Kernel.Source, "release://v0.2.0"; got != want {
+		t.Fatalf("cfg.Kernel.Source = %q, want %q", got, want)
+	}
+}
+
+func TestLoadConfigPrefersKernelPathOverLegacyKernelPath(t *testing.T) {
+	homeDir := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	mkdirAll(t, filepath.Join(homeDir, ".config", "keel"))
+	writeFile(t, filepath.Join(homeDir, ".config", "keel", "config.yaml"), "kernel_path: /opt/keel/legacy-vmlinux\n")
+	writeFile(t, filepath.Join(projectDir, "keel.yaml"), "kernel:\n  path: /opt/keel/project-vmlinux\n")
+
+	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got, want := cfg.Kernel.Path, "/opt/keel/project-vmlinux"; got != want {
+		t.Fatalf("cfg.Kernel.Path = %q, want %q", got, want)
+	}
+}
+
 func TestLoadMergedConfig(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

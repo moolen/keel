@@ -173,10 +173,16 @@ image: ubuntu:24.04
 # Optional override for where cached OCI/rootfs artifacts live.
 image_cache_dir: ~/.cache/keel/images
 
-# Optional override for the kernel image Keel should boot.
-# If omitted, Keel uses its managed default kernel path.
+# Kernel selection. Use `path` for a host-managed kernel image, or `source`
+# for a release-managed or remote kernel source.
 kernel:
-  path: ~/.cache/keel/kernel/vmlinux
+  source: release://latest
+
+  # Supported forms:
+  # path: /opt/keel/vmlinux
+  # source: release://latest
+  # source: release://v0.2.0
+  # source: https://example.com/vmlinux
 
 resources:
   # Number of guest vCPUs.

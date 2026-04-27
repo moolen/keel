@@ -10,9 +10,8 @@ func Default() Config {
 	return Config{
 		Image:         "ubuntu:24.04",
 		ImageCacheDir: filepath.Join(home, ".cache", "keel", "images"),
-		KernelPath:    filepath.Join(home, ".cache", "keel", "kernel", "vmlinux"),
 		Kernel: KernelConfig{
-			Path: filepath.Join(home, ".cache", "keel", "kernel", "vmlinux"),
+			Source: "release://latest",
 		},
 		Resources: ResourceConfig{
 			VCPU:     2,

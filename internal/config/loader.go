@@ -33,10 +33,10 @@ type mergePresenceWorkspaceConfig struct {
 }
 
 type mergePresenceNetworkConfig struct {
-	Audit        *bool                    `yaml:"audit"`
-	DenyIfNoSNI  *bool                    `yaml:"deny_if_no_sni"`
-	MITM         *mergePresenceMITMConfig `yaml:"mitm"`
-	HTTP         *mergePresenceHTTPConfig `yaml:"http"`
+	Audit       *bool                    `yaml:"audit"`
+	DenyIfNoSNI *bool                    `yaml:"deny_if_no_sni"`
+	MITM        *mergePresenceMITMConfig `yaml:"mitm"`
+	HTTP        *mergePresenceHTTPConfig `yaml:"http"`
 }
 
 type mergePresenceMITMConfig struct {
@@ -104,9 +104,6 @@ func Load(opts LoadOptions) (Config, error) {
 	cfg.ImageCacheDir = expandHome(cfg.ImageCacheDir)
 	cfg.KernelPath = expandHome(cfg.KernelPath)
 	cfg.Kernel.Path = expandHome(cfg.Kernel.Path)
-	if cfg.Kernel.Path == "" {
-		cfg.Kernel.Path = cfg.KernelPath
-	}
 	cfg.Workspace.Mount = resolveHostPath(wd, cfg.Workspace.Mount)
 	for i := range cfg.Volumes {
 		cfg.Volumes[i].Source = resolveHostPath(wd, cfg.Volumes[i].Source)
@@ -161,10 +158,14 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	}
 	if src.KernelPath != "" {
 		dst.KernelPath = src.KernelPath
-		dst.Kernel.Path = src.KernelPath
 	}
 	if src.Kernel.Path != "" {
 		dst.Kernel.Path = src.Kernel.Path
+	} else if src.KernelPath != "" {
+		dst.Kernel.Path = src.KernelPath
+	}
+	if src.Kernel.Source != "" {
+		dst.Kernel.Source = src.Kernel.Source
 	}
 	if src.Resources.VCPU != 0 {
 		dst.Resources.VCPU = src.Resources.VCPU
