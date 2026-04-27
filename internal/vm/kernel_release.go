@@ -133,14 +133,15 @@ func (m KernelManager) ensureLatestRelease(ctx context.Context, layout kernelCac
 		case metadata.SHA256URL != "":
 			expectedChecksum, checksumErr := m.downloadExpectedChecksum(ctx, asset.SHA256URL)
 			if checksumErr == nil {
-				if metadata.SHA256 == expectedChecksum {
-					return layout.kernelPath, nil
-				}
 				if verifyErr := verifyFileChecksum(layout.kernelPath, expectedChecksum); verifyErr == nil {
-					metadata.SHA256 = expectedChecksum
-					metadata.KernelURL = asset.KernelURL
-					metadata.SHA256URL = asset.SHA256URL
-					if writeErr := writeKernelCacheMetadata(layout.metadataPath, metadata); writeErr == nil {
+					if metadata.SHA256 != expectedChecksum || metadata.KernelURL != asset.KernelURL || metadata.SHA256URL != asset.SHA256URL {
+						metadata.SHA256 = expectedChecksum
+						metadata.KernelURL = asset.KernelURL
+						metadata.SHA256URL = asset.SHA256URL
+						if writeErr := writeKernelCacheMetadata(layout.metadataPath, metadata); writeErr == nil {
+							return layout.kernelPath, nil
+						}
+					} else {
 						return layout.kernelPath, nil
 					}
 				}

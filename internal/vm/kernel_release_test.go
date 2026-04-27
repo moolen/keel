@@ -145,6 +145,35 @@ func TestKernelManagerEnsureReleaseSources(t *testing.T) {
 			},
 		},
 		{
+			name:   "release://latest refreshes when metadata checksum does not match cached bytes",
+			source: "release://latest",
+			setup: func(t *testing.T, cacheDir string, api *releaseAPIFixture) {
+				t.Helper()
+				api.latestTag = "v0.2.0"
+				api.kernelBodies["v0.2.0"] = "kernel-v0.2.0-repacked"
+				writeCachedKernel(t, filepath.Join(cacheDir, "release-latest", arch), "kernel-v0.2.0-stale", KernelCacheMetadata{
+					SourceKind:  "release-latest",
+					ResolvedTag: "v0.2.0",
+					KernelURL:   api.assetURL("v0.2.0"),
+					SHA256URL:   api.shaURL("v0.2.0"),
+					SHA256:      checksumHex("kernel-v0.2.0-repacked"),
+				})
+			},
+			assert: func(t *testing.T, path string, err error, cacheDir string, api *releaseAPIFixture) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("EnsureConfig() error = %v", err)
+				}
+				assertFileContents(t, path, "kernel-v0.2.0-repacked")
+				if api.hits["asset:v0.2.0"] != 1 {
+					t.Fatalf("kernel asset downloads = %d, want 1", api.hits["asset:v0.2.0"])
+				}
+				if api.hits["sha:v0.2.0"] != 2 {
+					t.Fatalf("checksum downloads = %d, want 2", api.hits["sha:v0.2.0"])
+				}
+			},
+		},
+		{
 			name:   "release://latest falls back to cached copy on refresh failure",
 			source: "release://latest",
 			setup: func(t *testing.T, cacheDir string, api *releaseAPIFixture) {
