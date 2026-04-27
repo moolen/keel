@@ -32,7 +32,7 @@ type machineRunner interface {
 
 type HostRunner struct {
 	RuntimeDir        string
-	EnsureKernel      func(context.Context, string) (string, error)
+	EnsureKernel      func(context.Context, config.KernelConfig) (string, error)
 	GuestAssets       func() (image.GuestAgentAssets, error)
 	WorkspacePreparer func(workspace.PrepareOptions) (workspace.PrepareResult, error)
 	SyncWorkspace     func(workspace.ImageSyncOptions) (workspace.SyncResult, error)
@@ -402,10 +402,10 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 				progress.Step(kernelProgressStep(update))
 			},
 		}
-		ensureKernel = manager.Ensure
+		ensureKernel = manager.EnsureConfig
 	}
 	progress.Step(startupPhase(3, "ensuring kernel", "resolving guest kernel image"))
-	kernelPath, err := ensureKernel(ctx, cfg.Kernel.Path)
+	kernelPath, err := ensureKernel(ctx, cfg.Kernel)
 	if err != nil {
 		return vm.RuntimeAssets{}, err
 	}

@@ -160,7 +160,7 @@ func TestHostRunnerPreparesAssetsBeforeLaunch(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -191,6 +191,103 @@ func TestHostRunnerPreparesAssetsBeforeLaunch(t *testing.T) {
 	}
 	if machineAssets.WorkspacePath == "" {
 		t.Fatal("workspace path should not be empty")
+	}
+}
+
+func TestHostRunnerDefaultKernelResolutionPrefersKernelPath(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+
+	kernelPath := filepath.Join(tempDir, "custom-vmlinux")
+	if err := os.WriteFile(kernelPath, []byte("kernel"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg.Kernel.Path = kernelPath
+	cfg.Kernel.Source = "https://example.com/ignored-vmlinux"
+
+	writeCachedRootfsForHostRunnerTest(t, tempDir, cfg.Image)
+
+	runner := HostRunner{
+		RuntimeDir:  tempDir,
+		GuestAssets: stubGuestAssets,
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+	}
+
+	assets, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{})
+	if err != nil {
+		t.Fatalf("prepareAssets() error = %v", err)
+	}
+	if got, want := assets.KernelPath, kernelPath; got != want {
+		t.Fatalf("assets.KernelPath = %q, want %q", got, want)
+	}
+}
+
+func TestHostRunnerPassesDefaultKernelSourceToResolution(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+
+	writeCachedRootfsForHostRunnerTest(t, tempDir, cfg.Image)
+
+	var gotKernelCfg config.KernelConfig
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(_ context.Context, kernelCfg config.KernelConfig) (string, error) {
+			gotKernelCfg = kernelCfg
+			return filepath.Join(tempDir, "resolved-vmlinux"), nil
+		},
+		GuestAssets: stubGuestAssets,
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+	}
+
+	if _, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{}); err != nil {
+		t.Fatalf("prepareAssets() error = %v", err)
+	}
+	if got, want := gotKernelCfg.Source, "release://latest"; got != want {
+		t.Fatalf("kernel source = %q, want %q", got, want)
+	}
+	if gotKernelCfg.Path != "" {
+		t.Fatalf("kernel path = %q, want empty", gotKernelCfg.Path)
+	}
+}
+
+func TestHostRunnerPassesKernelSourceToResolution(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	cfg.Kernel.Source = "https://example.com/vmlinux"
+
+	writeCachedRootfsForHostRunnerTest(t, tempDir, cfg.Image)
+
+	var gotKernelCfg config.KernelConfig
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(_ context.Context, kernelCfg config.KernelConfig) (string, error) {
+			gotKernelCfg = kernelCfg
+			return filepath.Join(tempDir, "resolved-vmlinux"), nil
+		},
+		GuestAssets: stubGuestAssets,
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+	}
+
+	if _, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{}); err != nil {
+		t.Fatalf("prepareAssets() error = %v", err)
+	}
+	if got, want := gotKernelCfg, cfg.Kernel; !reflect.DeepEqual(got, want) {
+		t.Fatalf("kernel config = %#v, want %#v", got, want)
 	}
 }
 
@@ -225,7 +322,7 @@ func TestHostRunnerRefreshesLegacyCachedRootfsWhenOCITarballExists(t *testing.T)
 	pullCalls := 0
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		PullImage: func(_ context.Context, cacheDir, ref string) (image.PullResult, error) {
@@ -271,7 +368,7 @@ func TestHostRunnerReturnsWorkspacePrepareError(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		PullImage: func(_ context.Context, cacheDir, ref string) (image.PullResult, error) {
@@ -350,7 +447,7 @@ func TestHostRunnerPreparesVolumeAndMetadataAssets(t *testing.T) {
 	var manifest pkgboot.Manifest
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
@@ -401,7 +498,7 @@ func TestPrepareAssetsReturnsGuestAssetLoadError(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
@@ -431,7 +528,7 @@ func TestHostRunnerAutoPullsMissingRootfs(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -505,7 +602,7 @@ func TestHostRunnerRefreshesCachedGuestAgentWhenDigestChanges(t *testing.T) {
 	var runtimeAgent string
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: func() (image.GuestAgentAssets, error) {
@@ -578,7 +675,7 @@ func TestHostRunnerInjectsMITMGuestTrustAssets(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: func() (image.GuestAgentAssets, error) {
@@ -632,7 +729,7 @@ func TestHostRunnerAppliesConfiguredFeaturesBeforeLaunch(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -782,7 +879,7 @@ func TestHostRunnerWarnsWhenNetworkAuditModeIsEnabled(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -823,7 +920,7 @@ func TestHostRunnerAllocatesUniqueRuntimeDirByDefault(t *testing.T) {
 
 	var preparePaths []string
 	runner := HostRunner{
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(t.TempDir(), "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -870,7 +967,7 @@ func TestHostRunnerCleansUpEphemeralRuntimeDir(t *testing.T) {
 
 	var runtimeDir string
 	runner := HostRunner{
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(t.TempDir(), "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -911,7 +1008,7 @@ func TestHostRunnerRemovesArtifactsFromExplicitRuntimeDir(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -966,7 +1063,7 @@ func TestHostRunnerSyncsWorkspaceAfterCommandExit(t *testing.T) {
 	var syncOpts workspace.ImageSyncOptions
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -1022,7 +1119,7 @@ func TestHostRunnerPrintsNetworkSummaryAfterShutdown(t *testing.T) {
 	var stderr bytes.Buffer
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -1078,7 +1175,7 @@ func TestHostRunnerReportsStartupPhasesInOrderAndStopsBeforeMachineRun(t *testin
 	}
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -1143,7 +1240,7 @@ func TestHostRunnerStopsProgressBeforeReturningStartupError(t *testing.T) {
 	}
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -1190,7 +1287,7 @@ func TestHostRunnerReturnsSyncErrorAfterSuccessfulRun(t *testing.T) {
 
 	runner := HostRunner{
 		RuntimeDir: tempDir,
-		EnsureKernel: func(context.Context, string) (string, error) {
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(tempDir, "vmlinux"), nil
 		},
 		GuestAssets: stubGuestAssets,
@@ -1352,6 +1449,21 @@ func runtimeAssetsForHostRunnerVMTest(t *testing.T, dir string) vm.RuntimeAssets
 		}
 	}
 	return assets
+}
+
+func writeCachedRootfsForHostRunnerTest(t *testing.T, cacheDir, imageRef string) string {
+	t.Helper()
+	layout, err := image.ResolveCacheLayout(cacheDir, imageRef)
+	if err != nil {
+		t.Fatalf("ResolveCacheLayout() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(layout.RootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(layout.RootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return layout.RootfsPath
 }
 
 func debugfsReadCLI(t *testing.T, imagePath, target string) string {
