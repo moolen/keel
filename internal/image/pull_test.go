@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -184,4 +185,100 @@ func TestDescribeRemoteImageErrorAddsNetworkHint(t *testing.T) {
 	if !strings.Contains(err, "network connectivity") {
 		t.Fatalf("error = %q, want network hint", err)
 	}
+}
+
+func TestExtractFilesystemHandlesReadOnlyDirectories(t *testing.T) {
+	tarData := newTarArchive(t, []tarEntry{
+		{name: "home/", mode: 0o755, kind: tar.TypeDir},
+		{name: "home/agent/", mode: 0o755, kind: tar.TypeDir},
+		{name: "home/agent/go/", mode: 0o755, kind: tar.TypeDir},
+		{name: "home/agent/go/pkg/", mode: 0o755, kind: tar.TypeDir},
+		{name: "home/agent/go/pkg/mod/", mode: 0o555, kind: tar.TypeDir},
+		{name: "home/agent/go/pkg/mod/golang.org/", mode: 0o555, kind: tar.TypeDir},
+		{name: "home/agent/go/pkg/mod/golang.org/x/", mode: 0o555, kind: tar.TypeDir},
+		{name: "home/agent/go/pkg/mod/golang.org/x/mod@v0.35.0/", mode: 0o555, kind: tar.TypeDir},
+		{name: "home/agent/go/pkg/mod/golang.org/x/mod@v0.35.0/LICENSE", mode: 0o444, body: "license\n", kind: tar.TypeReg},
+	})
+
+	dst := t.TempDir()
+	t.Cleanup(func() {
+		_ = makeTreeWritable(dst)
+	})
+	if err := extractFilesystem(io.NopCloser(bytes.NewReader(tarData)), dst); err != nil {
+		t.Fatalf("extractFilesystem() error = %v", err)
+	}
+
+	licensePath := filepath.Join(dst, "home/agent/go/pkg/mod/golang.org/x/mod@v0.35.0/LICENSE")
+	if got, err := os.ReadFile(licensePath); err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", licensePath, err)
+	} else if string(got) != "license\n" {
+		t.Fatalf("license content = %q", string(got))
+	}
+
+	modDir := filepath.Join(dst, "home/agent/go/pkg/mod")
+	info, err := os.Stat(modDir)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", modDir, err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o555); got != want {
+		t.Fatalf("mode(%q) = %o, want %o", modDir, got, want)
+	}
+}
+
+func makeTreeWritable(root string) error {
+	var paths []string
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		paths = append(paths, path)
+		return nil
+	}); err != nil {
+		return err
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		return len(paths[i]) > len(paths[j])
+	})
+	for _, path := range paths {
+		if err := os.Chmod(path, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type tarEntry struct {
+	name string
+	body string
+	mode int64
+	kind byte
+}
+
+func newTarArchive(t *testing.T, entries []tarEntry) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, entry := range entries {
+		hdr := &tar.Header{
+			Name:     entry.name,
+			Mode:     entry.mode,
+			Typeflag: entry.kind,
+		}
+		if entry.kind == tar.TypeReg {
+			hdr.Size = int64(len(entry.body))
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("WriteHeader(%q) error = %v", entry.name, err)
+		}
+		if entry.kind == tar.TypeReg {
+			if _, err := io.WriteString(tw, entry.body); err != nil {
+				t.Fatalf("WriteString(%q) error = %v", entry.name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	return buf.Bytes()
 }

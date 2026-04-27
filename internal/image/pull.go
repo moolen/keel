@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -203,10 +204,11 @@ func extractFilesystem(reader io.ReadCloser, dst string) error {
 	}()
 
 	tr := tar.NewReader(reader)
+	dirModes := make(map[string]os.FileMode)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return nil
+			break
 		}
 		if err != nil {
 			return fmt.Errorf("read layer tar: %w", err)
@@ -219,14 +221,16 @@ func extractFilesystem(reader io.ReadCloser, dst string) error {
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
+			// Create directories writable during extraction, then restore the image mode.
+			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
+			dirModes[target] = os.FileMode(hdr.Mode)
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			file, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode))
+			file, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 			if err != nil {
 				return err
 			}
@@ -235,6 +239,9 @@ func extractFilesystem(reader io.ReadCloser, dst string) error {
 				return err
 			}
 			if err := file.Close(); err != nil {
+				return err
+			}
+			if err := os.Chmod(target, os.FileMode(hdr.Mode)); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
@@ -246,4 +253,22 @@ func extractFilesystem(reader io.ReadCloser, dst string) error {
 			}
 		}
 	}
+
+	// Apply final directory modes after all nested entries are materialized.
+	paths := make([]string, 0, len(dirModes))
+	for path := range dirModes {
+		paths = append(paths, path)
+	}
+	slices.SortFunc(paths, func(a, b string) int {
+		if len(a) == len(b) {
+			return strings.Compare(a, b)
+		}
+		return len(b) - len(a)
+	})
+	for _, path := range paths {
+		if err := os.Chmod(path, dirModes[path]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
