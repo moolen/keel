@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Determine next version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+
+          before="${{ github.event.before }}"
+          sha="${{ github.sha }}"
+
+          if [[ -z "${before}" || "${before}" == "0000000000000000000000000000000000000000" ]]; then
+            range="${sha}"
+          else
+            range="${before}..${sha}"
+          fi
+
+          messages="$(git log --format=%B "${range}")"
+          if [[ -z "${messages}" ]]; then
+            echo "No commit messages found for range ${range}" >&2
+            exit 1
+          fi
+
+          bump="patch"
+          if grep -Eqi '(^[a-z]+(\([^)]+\))?!:)|(^BREAKING CHANGE:)|(^BREAKING-CHANGE:)' <<<"${messages}"; then
+            bump="major"
+          elif grep -Eqi '^feat(\([^)]+\))?:' <<<"${messages}"; then
+            bump="minor"
+          fi
+
+          latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n1 || true)"
+          if [[ -z "${latest_tag}" ]]; then
+            next_tag="v0.1.0"
+          else
+            version="${latest_tag#v}"
+            IFS='.' read -r major minor patch <<<"${version}"
+
+            if [[ -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" ]]; then
+              echo "Latest tag ${latest_tag} is not valid semver" >&2
+              exit 1
+            fi
+
+            case "${bump}" in
+              major)
+                major=$((major + 1))
+                minor=0
+                patch=0
+                ;;
+              minor)
+                minor=$((minor + 1))
+                patch=0
+                ;;
+              patch)
+                patch=$((patch + 1))
+                ;;
+              *)
+                echo "Unsupported bump level ${bump}" >&2
+                exit 1
+                ;;
+            esac
+
+            next_tag="v${major}.${minor}.${patch}"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${next_tag}" >/dev/null; then
+            echo "Computed tag ${next_tag} already exists" >&2
+            exit 1
+          fi
+
+          mkdir -p dist/release
+
+          {
+            echo "range=${range}"
+            echo "bump=${bump}"
+            echo "latest_tag=${latest_tag}"
+            echo "next_tag=${next_tag}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build keel
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/release/keel-linux-amd64 ./cmd/keel
+
+      - name: Build keel-agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd guest
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../dist/release/keel-agent-linux-amd64 ./cmd/keel-agent
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.next_tag }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.version.outputs.next_tag }}" \
+            --generate-notes \
+            dist/release/keel-linux-amd64 \
+            dist/release/keel-agent-linux-amd64
