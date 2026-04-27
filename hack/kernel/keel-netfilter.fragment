@@ -1,0 +1,14 @@
+# Keel-owned delta on top of Firecracker's 6.1 guest kernel baseline.
+#
+# Keep this fragment small. The Firecracker baseline already enables most of
+# the guest plumbing we need; this file carries the extra netfilter and vsock
+# bits required for Keel's transparent redirect path and Docker-friendly guest
+# networking.
+CONFIG_NETFILTER_XT_MATCH_COMMENT=y
+CONFIG_NETFILTER_XT_MATCH_OWNER=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NF_TABLES_IPV6=y
+CONFIG_NFT_LOG=y
+CONFIG_NFT_MASQ=y
+CONFIG_NFT_REDIR=y
+CONFIG_VHOST_VSOCK=y
