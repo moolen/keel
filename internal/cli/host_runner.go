@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	bootmeta "github.com/moolen/keel/internal/bootmanifest"
@@ -189,9 +190,24 @@ func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *
 		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = instance.Stop(stopCtx)
-		return err
+		return diagnoseAttachFailure(err, req.Config.Image)
 	}
 	return instance.Wait(ctx)
+}
+
+func diagnoseAttachFailure(err error, imageRef string) error {
+	if err == nil {
+		return nil
+	}
+	text := err.Error()
+	if strings.Contains(text, "connection refused") || strings.Contains(text, "no such file or directory") {
+		msg := "guest exited before the control channel became available"
+		if imageRef != "" && !strings.Contains(imageRef, "@") {
+			msg += fmt.Sprintf("; if %q is a mutable tag, refresh the cached image with `keel image pull %s`", imageRef, imageRef)
+		}
+		return fmt.Errorf("%s: %w", msg, err)
+	}
+	return err
 }
 
 func forwardedPTYStdin(req RunRequest) *os.File {

@@ -21,9 +21,10 @@ import (
 )
 
 type Puller struct {
-	Fetch      func(context.Context, string) (v1.Image, error)
-	GuestInit  func() (GuestAgentAssets, error)
-	GuestTrust GuestTrustAssets
+	Fetch         func(context.Context, string) (v1.Image, error)
+	ResolveDigest func(context.Context, string) (string, error)
+	GuestInit     func() (GuestAgentAssets, error)
+	GuestTrust    GuestTrustAssets
 }
 
 type PullResult struct {
@@ -42,7 +43,16 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 		return PullResult{}, err
 	}
 	if cacheLayoutReady(layout, p.GuestInit != nil) {
-		return PullResult{Layout: layout}, nil
+		refresh, err := p.shouldRefreshCache(ctx, layout, ref)
+		if err != nil {
+			return PullResult{}, err
+		}
+		if !refresh {
+			return PullResult{Layout: layout}, nil
+		}
+		if err := os.RemoveAll(layout.Directory); err != nil {
+			return PullResult{}, err
+		}
 	}
 	if err := os.MkdirAll(layout.Directory, 0o755); err != nil {
 		return PullResult{}, err
@@ -63,6 +73,9 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 	}
 	if err := tarball.WriteToFile(layout.OCIPath, parsedRef, img); err != nil {
 		return PullResult{}, fmt.Errorf("write image tarball: %w", err)
+	}
+	if err := writeImageDigest(layout.DigestPath, img); err != nil {
+		return PullResult{}, err
 	}
 
 	tempDir, err := os.MkdirTemp("", "keel-rootfs-*")
@@ -97,6 +110,31 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 	}
 
 	return PullResult{Layout: layout}, nil
+}
+
+func (p Puller) shouldRefreshCache(ctx context.Context, layout CacheLayout, ref string) (bool, error) {
+	if referenceUsesDigest(ref) {
+		return false, nil
+	}
+	data, err := os.ReadFile(layout.DigestPath)
+	switch {
+	case err == nil:
+	case os.IsNotExist(err):
+		return true, nil
+	default:
+		return false, err
+	}
+
+	resolveDigest := p.ResolveDigest
+	if resolveDigest == nil {
+		resolveDigest = resolveRemoteDigest
+	}
+	remoteDigest, err := resolveDigest(ctx, ref)
+	if err != nil {
+		// Fail open when a mutable tag cannot be revalidated.
+		return false, nil
+	}
+	return strings.TrimSpace(string(data)) != strings.TrimSpace(remoteDigest), nil
 }
 
 func cacheLayoutReady(layout CacheLayout, requireAgent bool) bool {
@@ -175,6 +213,29 @@ func fetchRemoteImage(ctx context.Context, ref string) (v1.Image, error) {
 		return nil, fmt.Errorf("fetch remote image %q: %s", ref, describeRemoteImageError(err))
 	}
 	return img, nil
+}
+
+func resolveRemoteDigest(ctx context.Context, ref string) (string, error) {
+	parsedRef, err := name.ParseReference(ref)
+	if err != nil {
+		return "", fmt.Errorf("parse image reference: %w", err)
+	}
+	desc, err := remote.Head(parsedRef, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		return "", fmt.Errorf("resolve image digest %q: %s", ref, describeRemoteImageError(err))
+	}
+	return desc.Digest.String(), nil
+}
+
+func writeImageDigest(path string, img v1.Image) error {
+	digest, err := img.Digest()
+	if err != nil {
+		return fmt.Errorf("compute image digest: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(digest.String()+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write image digest: %w", err)
+	}
+	return nil
 }
 
 func describeRemoteImageError(err error) string {

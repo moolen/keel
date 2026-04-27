@@ -59,6 +59,9 @@ func TestPullAndCacheMaterializesArtifacts(t *testing.T) {
 	if _, err := os.Stat(result.Layout.AgentPath); err != nil {
 		t.Fatalf("Stat(%q) error = %v", result.Layout.AgentPath, err)
 	}
+	if _, err := os.Stat(result.Layout.DigestPath); err != nil {
+		t.Fatalf("Stat(%q) error = %v", result.Layout.DigestPath, err)
+	}
 	if got := debugfsRead(t, result.Layout.RootfsPath, "/usr/local/bin/keel-agent"); got != "agent-binary" {
 		t.Fatalf("guest agent content = %q", got)
 	}
@@ -83,6 +86,7 @@ func TestPullAndCacheReturnsCachedLayoutWithoutFetching(t *testing.T) {
 		{path: layout.RootfsPath, data: "rootfs"},
 		{path: layout.OCIPath, data: "oci"},
 		{path: layout.AgentPath, data: "digest"},
+		{path: layout.DigestPath, data: "sha256:current"},
 	} {
 		if err := os.WriteFile(item.path, []byte(item.data), 0o644); err != nil {
 			t.Fatalf("WriteFile(%q) error = %v", item.path, err)
@@ -106,6 +110,107 @@ func TestPullAndCacheReturnsCachedLayoutWithoutFetching(t *testing.T) {
 	}
 	if result.Layout.Directory != layout.Directory {
 		t.Fatalf("result.Layout.Directory = %q, want %q", result.Layout.Directory, layout.Directory)
+	}
+}
+
+func TestPullAndCacheRefreshesMutableTagWhenDigestChanges(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for pull tests")
+	}
+
+	cacheDir := t.TempDir()
+	layout, err := ResolveCacheLayout(cacheDir, "ghcr.io/moolen/keel:main")
+	if err != nil {
+		t.Fatalf("ResolveCacheLayout() error = %v", err)
+	}
+	if err := os.MkdirAll(layout.Directory, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	for _, item := range []struct {
+		path string
+		data string
+	}{
+		{path: layout.RootfsPath, data: "stale-rootfs"},
+		{path: layout.OCIPath, data: "stale-oci"},
+		{path: layout.AgentPath, data: "stale-agent"},
+		{path: layout.DigestPath, data: "sha256:stale"},
+	} {
+		if err := os.WriteFile(item.path, []byte(item.data), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", item.path, err)
+		}
+	}
+
+	img := testImage(t, map[string]string{"etc/issue": "fresh\n"})
+	fetchCalls := 0
+	puller := Puller{
+		Fetch: func(context.Context, string) (v1.Image, error) {
+			fetchCalls++
+			return img, nil
+		},
+		ResolveDigest: func(context.Context, string) (string, error) {
+			return "sha256:fresh", nil
+		},
+	}
+
+	result, err := puller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:main")
+	if err != nil {
+		t.Fatalf("PullAndCache() error = %v", err)
+	}
+	if fetchCalls != 1 {
+		t.Fatalf("fetchCalls = %d, want 1", fetchCalls)
+	}
+	if got := debugfsRead(t, result.Layout.RootfsPath, "/etc/issue"); got != "fresh\n" {
+		t.Fatalf("rootfs content = %q", got)
+	}
+}
+
+func TestPullAndCacheRefreshesMutableTagWithoutDigestMetadata(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for pull tests")
+	}
+
+	cacheDir := t.TempDir()
+	layout, err := ResolveCacheLayout(cacheDir, "ghcr.io/moolen/keel:main")
+	if err != nil {
+		t.Fatalf("ResolveCacheLayout() error = %v", err)
+	}
+	if err := os.MkdirAll(layout.Directory, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	for _, item := range []struct {
+		path string
+		data string
+	}{
+		{path: layout.RootfsPath, data: "stale-rootfs"},
+		{path: layout.OCIPath, data: "stale-oci"},
+		{path: layout.AgentPath, data: "stale-agent"},
+	} {
+		if err := os.WriteFile(item.path, []byte(item.data), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", item.path, err)
+		}
+	}
+
+	img := testImage(t, map[string]string{"etc/issue": "fresh\n"})
+	fetchCalls := 0
+	puller := Puller{
+		Fetch: func(context.Context, string) (v1.Image, error) {
+			fetchCalls++
+			return img, nil
+		},
+		ResolveDigest: func(context.Context, string) (string, error) {
+			return "sha256:fresh", nil
+		},
+	}
+
+	result, err := puller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:main")
+	if err != nil {
+		t.Fatalf("PullAndCache() error = %v", err)
+	}
+	if fetchCalls != 1 {
+		t.Fatalf("fetchCalls = %d, want 1", fetchCalls)
+	}
+	if _, err := os.Stat(result.Layout.DigestPath); err != nil {
+		t.Fatalf("Stat(%q) error = %v", result.Layout.DigestPath, err)
 	}
 }
 

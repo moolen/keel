@@ -14,6 +14,7 @@ type CacheLayout struct {
 	RootfsPath string
 	OCIPath    string
 	AgentPath  string
+	DigestPath string
 }
 
 func CachePath(cacheDir, ref string) string {
@@ -39,6 +40,7 @@ func ResolveCacheLayout(cacheDir, ref string) (CacheLayout, error) {
 		RootfsPath: filepath.Join(dir, "rootfs.ext4"),
 		OCIPath:    filepath.Join(dir, "image.tar"),
 		AgentPath:  filepath.Join(dir, "guest-agent.sha256"),
+		DigestPath: filepath.Join(dir, "image.digest"),
 	}, nil
 }
 
@@ -94,4 +96,8 @@ func looksLikeRegistry(part string) bool {
 func sanitizePath(value string) string {
 	replacer := strings.NewReplacer("/", "-", "@", "-", ":", "-", "\\", "-")
 	return replacer.Replace(value)
+}
+
+func referenceUsesDigest(ref string) bool {
+	return strings.Contains(ref, "@")
 }
