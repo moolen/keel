@@ -159,14 +159,17 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	}
 	if src.KernelPath != "" {
 		dst.KernelPath = src.KernelPath
+		dst.Kernel.Path = src.KernelPath
+		dst.Kernel.Source = ""
 	}
 	if src.Kernel.Path != "" {
 		dst.Kernel.Path = src.Kernel.Path
-	} else if src.KernelPath != "" {
-		dst.Kernel.Path = src.KernelPath
+		dst.Kernel.Source = ""
 	}
 	if src.Kernel.Source != "" {
 		dst.Kernel.Source = src.Kernel.Source
+		dst.Kernel.Path = ""
+		dst.KernelPath = ""
 	}
 	if src.Resources.VCPU != 0 {
 		dst.Resources.VCPU = src.Resources.VCPU
