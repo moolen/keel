@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -168,12 +169,15 @@ func TestKernelManagerEnsureReleaseSources(t *testing.T) {
 			source: "release://latest",
 			setup: func(t *testing.T, cacheDir string, api *releaseAPIFixture) {
 				t.Helper()
-				api.shaBodies["v0.2.0"] = "deadbeef  keel-vmlinux-x86_64\n"
+				api.shaBodies["v0.2.0"] = strings.Repeat("a", 64) + "  keel-vmlinux-x86_64\n"
 			},
 			assert: func(t *testing.T, path string, err error, cacheDir string, api *releaseAPIFixture) {
 				t.Helper()
 				if err == nil {
 					t.Fatalf("EnsureConfig() error = nil, want checksum mismatch")
+				}
+				if !errors.Is(err, errKernelChecksumMismatch) {
+					t.Fatalf("EnsureConfig() error = %v, want checksum mismatch", err)
 				}
 				if path != "" {
 					t.Fatalf("EnsureConfig() path = %q, want empty on checksum mismatch", path)
