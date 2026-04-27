@@ -124,6 +124,42 @@ keel -- docker build --no-cache .
 
 Keel starts `dockerd` inside the guest, configures it for proxy-based egress, and keeps the host TAP interface default-deny.
 
+### Choose the guest kernel
+
+Keel now defaults to a release-managed guest kernel:
+
+```yaml
+kernel:
+  source: release://latest
+```
+
+Supported forms:
+
+```yaml
+kernel:
+  source: release://v0.2.0
+```
+
+```yaml
+kernel:
+  source: https://example.com/vmlinux
+```
+
+```yaml
+kernel:
+  path: /opt/keel/vmlinux
+```
+
+The release-managed kernel is the default path for Keel runs and is intended to
+include the netfilter and Docker-friendly guest networking features Keel
+expects. If you want to build your own local variant, use:
+
+```bash
+./hack/kernel/build-kernel.sh
+```
+
+Then point Keel at the built file with `kernel.path`.
+
 ### Observe policy without enforcing it
 
 ```yaml
