@@ -311,7 +311,7 @@ func (m KernelManager) downloadKernelToPath(ctx context.Context, sourceURL, dest
 		Current: 0,
 		Total:   max(resp.ContentLength, 0),
 	})
-	if _, err := copyWithProgress(file, resp.Body, func(written int64) {
+	if err := copyWithProgress(file, resp.Body, func(written int64) {
 		m.reportProgress(KernelProgress{
 			Phase:   "downloading kernel",
 			Current: written,

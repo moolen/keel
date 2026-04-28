@@ -1,0 +1,40 @@
+image: ghcr.io/moolen/keel-devtools:main
+
+resources:
+  vcpu: 2
+  memory_mb: 1024
+  disk_mb: 4096
+
+workspace:
+  mount: .
+  target: /workspace
+  sync_back: true
+  sync_deletes: true
+  sync_confirm: false
+
+network:
+  mode: vsock
+  audit: true
+  deny_if_no_sni: false
+  dns:
+    allowed:
+      - "*.github.com"
+      - "archive.ubuntu.com"
+      - "security.ubuntu.com"
+  tcp:
+    allowed_cidrs: []
+    denied_cidrs: []
+  tls:
+    allowed_sni:
+      - "*.github.com"
+      - "archive.ubuntu.com"
+      - "security.ubuntu.com"
+
+features:
+  - name: docker
+    config:
+      storage_driver: vfs
+
+env:
+  static:
+    TERM: xterm-256color

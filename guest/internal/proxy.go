@@ -97,9 +97,7 @@ func chooseTrafficInterception(factory interceptionFactory) trafficInterception 
 
 func StartTCPProxy(ctx context.Context) (trafficInterception, error) {
 	interception := chooseTrafficInterception(interceptionFactory{
-		startBPF: func() (trafficInterception, error) {
-			return newBPFCgroupInterception()
-		},
+		startBPF: newBPFCgroupInterception,
 		startNFT: func() (trafficInterception, error) {
 			if err := ensureTransparentTCPRedirect(); err != nil {
 				return nil, err
@@ -117,7 +115,7 @@ func StartTCPProxy(ctx context.Context) (trafficInterception, error) {
 		log.Printf("transparent tcp redirect unavailable; only proxy-aware clients will work")
 	}
 
-	listener, err := net.Listen("tcp", tcpProxyAddr)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", tcpProxyAddr)
 	if err != nil {
 		return nil, err
 	}

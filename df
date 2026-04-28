@@ -1,0 +1,6 @@
+FROM alpine
+
+RUN apk update && apk add curl
+
+RUN cat /etc/resolv.conf
+RUN curl --noproxy '*' https://example.com

@@ -1,20 +1,20 @@
 package config
 
 type Config struct {
-	Image         string         `yaml:"image"`
-	ImageCacheDir string         `yaml:"image_cache_dir"`
-	Kernel        KernelConfig   `yaml:"kernel"`
-	Resources     ResourceConfig `yaml:"resources"`
-	Workspace        WorkspaceConfig   `yaml:"workspace"`
-	Volumes          []VolumeConfig    `yaml:"volumes"`
-	Network          NetworkConfig     `yaml:"network"`
-	Process          *ProcessConfig    `yaml:"process"`
-	Features         []FeatureConfig   `yaml:"features"`
-	Env              EnvConfig         `yaml:"env"`
-	Command          []string          `yaml:"-"`
-	Verbose          bool              `yaml:"-"`
-	DryRun           bool              `yaml:"-"`
-	RuntimeEnv       map[string]string `yaml:"-"`
+	Image         string            `yaml:"image"`
+	ImageCacheDir string            `yaml:"image_cache_dir"`
+	Kernel        KernelConfig      `yaml:"kernel"`
+	Resources     ResourceConfig    `yaml:"resources"`
+	Workspace     WorkspaceConfig   `yaml:"workspace"`
+	Volumes       []VolumeConfig    `yaml:"volumes"`
+	Network       NetworkConfig     `yaml:"network"`
+	Process       *ProcessConfig    `yaml:"process"`
+	Features      []FeatureConfig   `yaml:"features"`
+	Env           EnvConfig         `yaml:"env"`
+	Command       []string          `yaml:"-"`
+	Verbose       bool              `yaml:"-"`
+	DryRun        bool              `yaml:"-"`
+	RuntimeEnv    map[string]string `yaml:"-"`
 }
 
 type KernelConfig struct {

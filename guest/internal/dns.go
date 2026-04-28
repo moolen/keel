@@ -19,7 +19,7 @@ const (
 )
 
 func StartDNSForwarder(ctx context.Context) error {
-	pc, err := net.ListenPacket("udp", dnsAddr)
+	pc, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", dnsAddr)
 	if err != nil {
 		return err
 	}
@@ -39,7 +39,7 @@ func StartDNSForwarder(ctx context.Context) error {
 				}
 				return
 			}
-			reply, err := forwardDNSQuery(ctx, buf[:n])
+			reply, err := forwardDNSQuery(buf[:n])
 			if err != nil {
 				log.Printf("dns forwarder upstream error: %v", err)
 				continue
@@ -51,7 +51,7 @@ func StartDNSForwarder(ctx context.Context) error {
 	return os.WriteFile("/etc/resolv.conf", []byte(resolvConfContents()), 0o644)
 }
 
-func forwardDNSQuery(ctx context.Context, payload []byte) ([]byte, error) {
+func forwardDNSQuery(payload []byte) ([]byte, error) {
 	conn, err := vsock.Dial(hostCID, dnsPort, nil)
 	if err != nil {
 		return nil, err

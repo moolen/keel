@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/moolen/keel/internal/paths"
 	"golang.org/x/term"
+
+	"github.com/moolen/keel/internal/paths"
 )
 
 type SyncResult struct {

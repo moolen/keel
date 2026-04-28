@@ -22,9 +22,7 @@ func TestEnsureLoopbackUpSetsIFFUP(t *testing.T) {
 			socketProto = proto
 			return 42, nil
 		},
-		newIfreq: func(name string) (*unix.Ifreq, error) {
-			return unix.NewIfreq(name)
-		},
+		newIfreq: unix.NewIfreq,
 		ioctlIfreq: func(fd int, req uint, ifr *unix.Ifreq) error {
 			if fd != 42 {
 				t.Fatalf("fd = %d, want 42", fd)

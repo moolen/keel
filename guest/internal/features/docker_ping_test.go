@@ -2,6 +2,7 @@ package features
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 
 func TestDockerDaemonReadyPingsUnixSocket(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "docker.sock")
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}

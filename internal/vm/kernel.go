@@ -194,7 +194,7 @@ func (m KernelManager) download(ctx context.Context, url, destPath string) error
 	defer func() {
 		_ = file.Close()
 	}()
-	if _, err := copyWithProgress(file, resp.Body, func(written int64) {
+	if err := copyWithProgress(file, resp.Body, func(written int64) {
 		m.reportProgress(KernelProgress{
 			Phase:   "downloading kernel",
 			Current: written,
@@ -251,7 +251,7 @@ func (m KernelManager) reportProgress(update KernelProgress) {
 	}
 }
 
-func copyWithProgress(dst io.Writer, src io.Reader, report func(int64)) (int64, error) {
+func copyWithProgress(dst io.Writer, src io.Reader, report func(int64)) error {
 	buf := make([]byte, 32*1024)
 	var written int64
 	for {
@@ -263,17 +263,17 @@ func copyWithProgress(dst io.Writer, src io.Reader, report func(int64)) (int64, 
 				report(written)
 			}
 			if writeErr != nil {
-				return written, writeErr
+				return writeErr
 			}
 			if nw != nr {
-				return written, io.ErrShortWrite
+				return io.ErrShortWrite
 			}
 		}
 		if readErr != nil {
 			if readErr == io.EOF {
-				return written, nil
+				return nil
 			}
-			return written, readErr
+			return readErr
 		}
 	}
 }

@@ -13,7 +13,7 @@ import (
 )
 
 func TestConfigureCommandCredentialLeavesSysProcAttrUnsetWhenProcessOmitted(t *testing.T) {
-	cmd := exec.Command("/bin/sh")
+	cmd := exec.CommandContext(t.Context(), "/bin/sh")
 
 	configureCommandCredential(cmd, nil, 0)
 
@@ -23,7 +23,7 @@ func TestConfigureCommandCredentialLeavesSysProcAttrUnsetWhenProcessOmitted(t *t
 }
 
 func TestConfigureCommandCredentialAppliesConfiguredCredential(t *testing.T) {
-	cmd := exec.Command("/bin/sh")
+	cmd := exec.CommandContext(t.Context(), "/bin/sh")
 	process := &ProcessConfig{
 		UID:               1000,
 		GID:               1001,
@@ -54,7 +54,7 @@ func TestConfigureCommandCredentialAppliesConfiguredCredential(t *testing.T) {
 }
 
 func TestConfigureCommandCredentialAddsWorkloadCgroupFD(t *testing.T) {
-	cmd := exec.Command("/bin/sh")
+	cmd := exec.CommandContext(t.Context(), "/bin/sh")
 
 	configureCommandCredential(cmd, nil, 42)
 

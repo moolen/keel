@@ -223,7 +223,7 @@ func startGuestProcess(ctx context.Context, name string, args []string, env []st
 }
 
 func runGuestCommand(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -296,7 +296,7 @@ func waitForDockerDaemon(env []string) error {
 }
 
 func dockerDaemonReady(socketPath string) error {
-	conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+	conn, err := (&net.Dialer{Timeout: 200 * time.Millisecond}).DialContext(context.Background(), "unix", socketPath)
 	if err != nil {
 		return err
 	}

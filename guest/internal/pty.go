@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -54,7 +55,7 @@ func ServePTY(command []string, cwd string, env []string, process *ProcessConfig
 		}
 		return err
 	}
-	cmd := exec.Command(commandPath, command[1:]...)
+	cmd := exec.CommandContext(context.Background(), commandPath, command[1:]...)
 	cmd.Dir = cwd
 	cmd.Env = env
 	configureCommandCredential(cmd, process, workloadCgroupFD(interception))

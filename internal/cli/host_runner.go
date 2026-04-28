@@ -13,6 +13,8 @@ import (
 
 	"golang.org/x/term"
 
+	"golang.org/x/sys/unix"
+
 	bootmeta "github.com/moolen/keel/internal/bootmanifest"
 	"github.com/moolen/keel/internal/config"
 	keelfeatures "github.com/moolen/keel/internal/features"
@@ -26,8 +28,6 @@ import (
 	"github.com/moolen/keel/internal/volume"
 	"github.com/moolen/keel/internal/workspace"
 	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
-	"golang.org/x/sys/unix"
-	"golang.org/x/term"
 )
 
 type machineRunner interface {
@@ -665,9 +665,9 @@ func copySparseExtents(dst, src *os.File, size int64, chunkSize int) error {
 	offset := int64(0)
 	for offset < size {
 		dataOffset, err := unix.Seek(int(src.Fd()), offset, unix.SEEK_DATA)
-		switch {
-		case err == nil:
-		case err == unix.ENXIO:
+		switch err {
+		case nil:
+		case unix.ENXIO:
 			return nil
 		default:
 			return err
@@ -724,10 +724,10 @@ func ensureRuntimeRootfsSize(imagePath string, minSizeMB int) error {
 	if info.Size() >= targetBytes {
 		return nil
 	}
-	if err := exec.Command("truncate", "-s", fmt.Sprintf("%dM", minSizeMB), imagePath).Run(); err != nil {
+	if err := exec.CommandContext(context.Background(), "truncate", "-s", fmt.Sprintf("%dM", minSizeMB), imagePath).Run(); err != nil {
 		return fmt.Errorf("grow runtime rootfs image: %w", err)
 	}
-	if output, err := exec.Command("resize2fs", imagePath).CombinedOutput(); err != nil {
+	if output, err := exec.CommandContext(context.Background(), "resize2fs", imagePath).CombinedOutput(); err != nil {
 		return fmt.Errorf("resize runtime rootfs filesystem: %w: %s", err, output)
 	}
 	return nil

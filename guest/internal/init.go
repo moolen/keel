@@ -7,8 +7,9 @@ import (
 	"os/exec"
 	"strings"
 
-	guestfeatures "github.com/moolen/keel/guest/internal/features"
 	"golang.org/x/sys/unix"
+
+	guestfeatures "github.com/moolen/keel/guest/internal/features"
 )
 
 func Bootstrap(command []string, env []string, configured []guestfeatures.ConfiguredFeature, process *ProcessConfig) error {
@@ -63,7 +64,7 @@ func ensureResolverHostnameWith(getHostname func() (string, error), setHostname 
 
 func runGuestTrustHook() error {
 	return runGuestTrustHookWith(os.Stat, func(path string) error {
-		cmd := exec.Command("/bin/sh", path)
+		cmd := exec.CommandContext(context.Background(), "/bin/sh", path)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
