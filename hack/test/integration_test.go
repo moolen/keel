@@ -32,6 +32,9 @@ func TestKeelE2ESuite(t *testing.T) {
 	t.Run("T10 Workspace Sync Back", suite.testWorkspaceSync)
 	t.Run("T11 Simulated Agent Workflow", suite.testAgentWorkflow)
 	t.Run("T12 Shutdown Summary", suite.testShutdownSummary)
+	if os.Getenv("KEEL_E2E_STRESS") == "1" {
+		t.Run("T13 Parallel Network Stress", suite.testParallelNetworkStress)
+	}
 }
 
 func (s *e2eSuite) testImageManagement(t *testing.T) {
@@ -546,11 +549,27 @@ func (s *e2eSuite) testAuditMode(t *testing.T) {
 }
 
 func (s *e2eSuite) testDockerInVM(t *testing.T) {
+	requireFreeDiskSpace(t, "/var/tmp", 5*1024*1024*1024)
+
 	project := s.newProject(t)
+	dockerProbeDir := filepath.Join(project.dir, "docker-probe")
+	writeTextFile(t, filepath.Join(dockerProbeDir, "Dockerfile"), `FROM alpine:3.20
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+RUN env -u HTTP_PROXY -u HTTPS_PROXY -u NO_PROXY -u http_proxy -u https_proxy -u no_proxy \
+    sh -eux -c 'apk update >/dev/null && apk add --no-cache curl >/dev/null && curl --noproxy "*" -fsS https://httpbin.org/get >/dev/null && echo build-transparent-ok'
+RUN sh -eux -c 'test -n "${HTTP_PROXY:-}${http_proxy:-}" && apk update >/dev/null && apk add --no-cache curl >/dev/null && curl -fsS https://httpbin.org/get >/dev/null && echo build-proxy-ok'
+`)
 	project.writeConfig(t, "docker:28-dind", yamlBlock(
 		"workspace:",
 		"  mount: .",
 		"  target: /workspace",
+		"resources:",
+		"  root_disk_mb: 4096",
 		"network:",
 		"  dns:",
 		"    allowed:",
@@ -564,6 +583,7 @@ func (s *e2eSuite) testDockerInVM(t *testing.T) {
 		"      - dl-cdn.alpinelinux.org",
 		"      - '*.alpinelinux.org'",
 		"      - httpbin.org",
+		"      - registry.npmjs.org",
 		"  tls:",
 		"    allowed_sni:",
 		"      - auth.docker.io",
@@ -576,6 +596,7 @@ func (s *e2eSuite) testDockerInVM(t *testing.T) {
 		"      - dl-cdn.alpinelinux.org",
 		"      - '*.alpinelinux.org'",
 		"      - httpbin.org",
+		"      - registry.npmjs.org",
 		"features:",
 		"  - name: docker",
 		"    config:",
@@ -589,6 +610,22 @@ docker version >/dev/null
 echo docker-version-ok
 docker pull alpine:3.20 >/dev/null
 docker run --rm alpine:3.20 echo "hello from docker"
+docker run --rm -i \
+  -e HTTP_PROXY= -e HTTPS_PROXY= -e NO_PROXY= \
+  -e http_proxy= -e https_proxy= -e no_proxy= \
+  alpine:3.20 sh -eux -c '
+    apk update >/dev/null
+    apk add --no-cache curl >/dev/null
+    curl --noproxy "*" -fsS https://httpbin.org/get >/dev/null
+    echo docker-transparent-ok
+  '
+docker run --rm -i alpine:3.20 sh -eux -c '
+  env | grep -Eq "^(HTTP_PROXY|http_proxy)=http://172.17.0.1:3128$"
+  apk update >/dev/null
+  apk add --no-cache curl >/dev/null
+  curl -fsS https://httpbin.org/get >/dev/null
+  echo docker-proxy-ok
+'
 cd /workspace/docker-node
 docker build -t keel-node-test .
 docker run --rm -d -p 3000:3000 --name node-test keel-node-test >/dev/null
@@ -603,17 +640,25 @@ curl -fsS http://localhost:5000
 docker stop python-test >/dev/null
 cd /workspace/docker-node
 docker build --no-cache -t keel-node-nocache . >/dev/null
+cd /workspace/docker-probe
+docker build --no-cache -t keel-alpine-probe .
 echo docker-build-ok
 `)...)
 	result.requireSuccess(t)
 	requireContainsAll(t, result.Stdout,
 		"docker-version-ok",
 		"hello from docker",
+		"docker-transparent-ok",
+		"docker-proxy-ok",
 		"hello from node",
 		"hello from python",
 		"docker-build-ok",
 	)
-	requireContainsAll(t, result.Stderr, "Network summary:")
+	requireContainsAll(t, result.Combined,
+		"build-transparent-ok",
+		"build-proxy-ok",
+		"Network summary:",
+	)
 }
 
 func (s *e2eSuite) testWorkspaceSync(t *testing.T) {
@@ -756,6 +801,34 @@ git status --short
 	for i := 1; i <= 10; i++ {
 		requireFileContains(t, filepath.Join(project.dir, "batch-"+strconv.Itoa(i)+".txt"), "file")
 	}
+}
+
+func (s *e2eSuite) testParallelNetworkStress(t *testing.T) {
+	project := s.newProject(t)
+	project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
+		"network:",
+		"  dns:",
+		"    allowed:",
+		"      - api.github.com",
+		"      - httpbin.org",
+		"  tls:",
+		"    allowed_sni:",
+		"      - api.github.com",
+		"      - httpbin.org",
+	))
+
+	result := project.run(t, "", sh(`
+set -eu
+seq 1 24 | xargs -P 8 -I{} sh -c '
+  env -u HTTP_PROXY -u HTTPS_PROXY -u NO_PROXY -u http_proxy -u https_proxy -u no_proxy \
+    curl --noproxy "*" -fsS "https://httpbin.org/get?direct={}" >/dev/null
+  curl -fsS "https://api.github.com/rate_limit?proxy={}" >/dev/null
+'
+echo stress-ok
+`)...)
+	result.requireSuccess(t)
+	requireContainsAll(t, result.Stdout, "stress-ok")
+	requireContainsAll(t, result.Stderr, "Network summary:")
 }
 
 func (s *e2eSuite) testShutdownSummary(t *testing.T) {

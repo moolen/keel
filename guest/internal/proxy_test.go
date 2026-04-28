@@ -26,6 +26,9 @@ func TestProxyEnvironmentSetsLocalProxyVariables(t *testing.T) {
 	if got, want := values["DOCKER_CONFIG"], "/etc/docker/client"; got != want {
 		t.Fatalf("DOCKER_CONFIG = %q, want %q", got, want)
 	}
+	if got, want := values["DOCKER_BUILDKIT"], "0"; got != want {
+		t.Fatalf("DOCKER_BUILDKIT = %q, want %q", got, want)
+	}
 	if got, want := values["TERM"], "xterm-256color"; got != want {
 		t.Fatalf("TERM = %q, want %q", got, want)
 	}

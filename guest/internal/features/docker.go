@@ -10,12 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const (
-	dockerBridgeCIDR = "172.17.0.1/16"
-	dockerProxyURL   = "http://172.17.0.1:3128"
+	dockerBridgeCIDR   = "172.17.0.1/16"
+	dockerBridgeSubnet = "172.17.0.0/16"
+	dockerProxyURL     = "http://172.17.0.1:3128"
+	dockerCgroupParent = "/keel/docker"
 )
 
 type ConfiguredFeature struct {
@@ -30,15 +33,17 @@ type DockerConfig struct {
 }
 
 type Runner struct {
-	LookupPath    func(string) (string, error)
-	Stat          func(string) (os.FileInfo, error)
-	MkdirAll      func(string, os.FileMode) error
-	WriteFile     func(string, []byte, os.FileMode) error
-	Remove        func(string) error
-	RemoveAll     func(string) error
-	StartProcess  func(context.Context, string, []string, []string, string) error
-	WaitForFile   func(string) error
-	WaitForDaemon func([]string) error
+	LookupPath       func(string) (string, error)
+	Stat             func(string) (os.FileInfo, error)
+	MkdirAll         func(string, os.FileMode) error
+	WriteFile        func(string, []byte, os.FileMode) error
+	Remove           func(string) error
+	RemoveAll        func(string) error
+	StartProcess     func(context.Context, string, []string, []string, string, int) error
+	WaitForFile      func(string) error
+	WaitForDaemon    func([]string) error
+	RunCommand       func(string, ...string) error
+	WorkloadCgroupFD int
 }
 
 func (r Runner) RunConfigured(ctx context.Context, configured []ConfiguredFeature, env []string) error {
@@ -78,6 +83,10 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if _, err := findBinary(lookupPath, stat, "docker", []string{"/usr/local/bin/docker", "/usr/bin/docker"}); err != nil {
 		return fmt.Errorf("docker feature requires docker in PATH: %w", err)
 	}
+	iptablesPath, err := findBinary(lookupPath, stat, "iptables", []string{"/usr/sbin/iptables", "/sbin/iptables", "/usr/bin/iptables", "/bin/iptables"})
+	if err != nil {
+		return fmt.Errorf("docker feature requires iptables in PATH: %w", err)
+	}
 
 	mkdirAll := r.MkdirAll
 	if mkdirAll == nil {
@@ -99,11 +108,16 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	daemonConfig := map[string]any{
 		"storage-driver":   cfg.StorageDriver,
 		"registry-mirrors": cfg.RegistryMirrors,
-		"iptables":         false,
+		"iptables":         true,
+		"ip6tables":        false,
 		"bip":              dockerBridgeCIDR,
-		"ip-forward":       false,
-		"ip-masq":          false,
+		"dns":              []string{"172.17.0.1"},
+		"ip-forward":       true,
+		"ip-masq":          true,
 		"userland-proxy":   false,
+	}
+	if r.WorkloadCgroupFD > 0 {
+		daemonConfig["cgroup-parent"] = dockerCgroupParent
 	}
 	body, err := json.Marshal(daemonConfig)
 	if err != nil {
@@ -148,6 +162,13 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if removeAll == nil {
 		removeAll = os.RemoveAll
 	}
+	runCommand := r.RunCommand
+	if runCommand == nil {
+		runCommand = runGuestCommand
+	}
+	if err := ensureDockerForwarding(writeFile, stat); err != nil {
+		return err
+	}
 	if err := removeAll("/var/run/docker"); err != nil {
 		return err
 	}
@@ -165,7 +186,7 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if startProcess == nil {
 		startProcess = startGuestProcess
 	}
-	if err := startProcess(ctx, dockerdPath, []string{"--host=unix:///var/run/docker.sock", "--config-file=/etc/docker/daemon.json"}, env, "/"); err != nil {
+	if err := startProcess(ctx, dockerdPath, []string{"--host=unix:///var/run/docker.sock", "--config-file=/etc/docker/daemon.json"}, env, "/", r.WorkloadCgroupFD); err != nil {
 		return err
 	}
 
@@ -180,16 +201,76 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if waitForDaemon == nil {
 		waitForDaemon = waitForDockerDaemon
 	}
-	return waitForDaemon(env)
+	if err := waitForDaemon(env); err != nil {
+		return err
+	}
+	return ensureDockerTransparentRedirect(runCommand, iptablesPath)
 }
 
-func startGuestProcess(ctx context.Context, name string, args []string, env []string, dir string) error {
+func startGuestProcess(ctx context.Context, name string, args []string, env []string, dir string, cgroupFD int) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if cgroupFD > 0 {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			UseCgroupFD: true,
+			CgroupFD:    cgroupFD,
+		}
+	}
 	return cmd.Start()
+}
+
+func runGuestCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func ensureDockerTransparentRedirect(runCommand func(string, ...string) error, iptablesPath string) error {
+	if runCommand == nil {
+		return nil
+	}
+	redirectRule := []string{"-t", "nat", "-A", "PREROUTING", "-s", dockerBridgeSubnet, "-p", "tcp", "-j", "REDIRECT", "--to-ports", "3128"}
+	skipProxyRule := []string{"-t", "nat", "-I", "PREROUTING", "1", "-s", dockerBridgeSubnet, "-p", "tcp", "-d", "172.17.0.1", "--dport", "3128", "-j", "RETURN"}
+	if err := runCommand(iptablesPath, skipProxyRule...); err != nil {
+		return fmt.Errorf("configure docker proxy bypass: %w", err)
+	}
+	if err := runCommand(iptablesPath, redirectRule...); err != nil {
+		return fmt.Errorf("configure docker transparent redirect: %w", err)
+	}
+	return nil
+}
+
+func ensureDockerForwarding(writeFile func(string, []byte, os.FileMode) error, stat func(string) (os.FileInfo, error)) error {
+	if writeFile == nil {
+		return nil
+	}
+	for _, setting := range []struct {
+		path  string
+		value string
+	}{
+		{path: "/proc/sys/net/ipv4/ip_forward", value: "1\n"},
+		{path: "/proc/sys/net/ipv4/conf/all/forwarding", value: "1\n"},
+	} {
+		if err := writeFile(setting.path, []byte(setting.value), 0o644); err != nil {
+			return fmt.Errorf("enable docker forwarding at %s: %w", setting.path, err)
+		}
+	}
+	if stat == nil {
+		stat = os.Stat
+	}
+	const bridgeNetfilterPath = "/proc/sys/net/bridge/bridge-nf-call-iptables"
+	if _, err := stat(bridgeNetfilterPath); err == nil {
+		if err := writeFile(bridgeNetfilterPath, []byte("1\n"), 0o644); err != nil {
+			return fmt.Errorf("enable docker bridge netfilter at %s: %w", bridgeNetfilterPath, err)
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func waitForSocket(path string) error {

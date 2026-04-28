@@ -38,7 +38,9 @@ func Bootstrap(command []string, env []string, configured []guestfeatures.Config
 		return err
 	}
 	proxyEnv := proxyEnvironment(env)
-	if err := (guestfeatures.Runner{}).RunConfigured(ctx, configured, proxyEnv); err != nil {
+	if err := (guestfeatures.Runner{
+		WorkloadCgroupFD: workloadCgroupFD(interception),
+	}).RunConfigured(ctx, configured, proxyEnv); err != nil {
 		return err
 	}
 	return ServePTY(command, cwd, proxyEnv, process, interception)

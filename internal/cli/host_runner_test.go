@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -255,6 +256,115 @@ func TestHostRunnerExpandsRuntimeRootfsWhenRootDiskConfigured(t *testing.T) {
 	if got, want := gotRootfsSize, int64(cfg.Resources.RootDiskMB)*1024*1024; got < want {
 		t.Fatalf("runtime rootfs size = %d, want at least %d", got, want)
 	}
+}
+
+func TestHostRunnerFailsFastWhenRuntimeSpaceIsInsufficient(t *testing.T) {
+	tempDir := t.TempDir()
+	sourceDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = sourceDir
+	cfg.Resources.RootDiskMB = 4096
+	cfg.Resources.DiskMB = 1024
+
+	rootfsPath := filepath.Join(tempDir, "index.docker.io", "library", "ubuntu", "24.04", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	workspacePrepared := false
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		RuntimeFreeBytes: func(string) (uint64, error) {
+			return 512 * 1024 * 1024, nil
+		},
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		GuestAssets: stubGuestAssets,
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			workspacePrepared = true
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+	}
+
+	_, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{})
+	if err == nil {
+		t.Fatal("prepareAssets() error = nil, want insufficient runtime space error")
+	}
+	if !strings.Contains(err.Error(), "insufficient free space for runtime data") {
+		t.Fatalf("prepareAssets() error = %v, want insufficient free space error", err)
+	}
+	if workspacePrepared {
+		t.Fatal("workspace preparer should not run when runtime storage is insufficient")
+	}
+}
+
+func TestCopyRuntimeRootfsPreservesSparseFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	sourcePath := filepath.Join(tempDir, "source.ext4")
+	runtimePath := filepath.Join(tempDir, "runtime.ext4")
+
+	src, err := os.OpenFile(sourcePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile() error = %v", err)
+	}
+	t.Cleanup(func() { _ = src.Close() })
+
+	const logicalSize = int64(1 << 30)
+	if err := src.Truncate(logicalSize); err != nil {
+		t.Fatalf("Truncate() error = %v", err)
+	}
+	if _, err := src.WriteAt([]byte("keel"), 0); err != nil {
+		t.Fatalf("WriteAt(start) error = %v", err)
+	}
+	if _, err := src.WriteAt([]byte("agent"), logicalSize-int64(len("agent"))); err != nil {
+		t.Fatalf("WriteAt(end) error = %v", err)
+	}
+	if err := src.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	if err := copyRuntimeRootfs(sourcePath, runtimePath); err != nil {
+		t.Fatalf("copyRuntimeRootfs() error = %v", err)
+	}
+
+	srcInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		t.Fatalf("Stat(source) error = %v", err)
+	}
+	dstInfo, err := os.Stat(runtimePath)
+	if err != nil {
+		t.Fatalf("Stat(runtime) error = %v", err)
+	}
+	if got, want := dstInfo.Size(), srcInfo.Size(); got != want {
+		t.Fatalf("runtime size = %d, want %d", got, want)
+	}
+
+	srcBlocks := statBlocks(t, srcInfo)
+	dstBlocks := statBlocks(t, dstInfo)
+	if srcBlocks == 0 || dstBlocks == 0 {
+		t.Skip("filesystem does not report sparse allocation blocks")
+	}
+	if dstBlocks > srcBlocks*4 {
+		t.Fatalf("runtime blocks = %d, want sparse copy close to source blocks %d", dstBlocks, srcBlocks)
+	}
+}
+
+func statBlocks(t *testing.T, info os.FileInfo) int64 {
+	t.Helper()
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("stat blocks unavailable")
+	}
+	return stat.Blocks
 }
 
 func TestHostRunnerDefaultKernelResolutionPrefersKernelPath(t *testing.T) {
@@ -996,6 +1106,9 @@ func TestHostRunnerAllocatesUniqueRuntimeDirByDefault(t *testing.T) {
 
 	var preparePaths []string
 	runner := HostRunner{
+		RuntimeFreeBytes: func(string) (uint64, error) {
+			return ^uint64(0), nil
+		},
 		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(t.TempDir(), "vmlinux"), nil
 		},
@@ -1043,6 +1156,9 @@ func TestHostRunnerCleansUpEphemeralRuntimeDir(t *testing.T) {
 
 	var runtimeDir string
 	runner := HostRunner{
+		RuntimeFreeBytes: func(string) (uint64, error) {
+			return ^uint64(0), nil
+		},
 		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
 			return filepath.Join(t.TempDir(), "vmlinux"), nil
 		},

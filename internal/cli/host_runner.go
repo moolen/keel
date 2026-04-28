@@ -24,6 +24,7 @@ import (
 	"github.com/moolen/keel/internal/volume"
 	"github.com/moolen/keel/internal/workspace"
 	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -33,6 +34,7 @@ type machineRunner interface {
 
 type HostRunner struct {
 	RuntimeDir        string
+	RuntimeFreeBytes  func(string) (uint64, error)
 	EnsureKernel      func(context.Context, config.KernelConfig) (string, error)
 	GuestAssets       func() (image.GuestAgentAssets, error)
 	WorkspacePreparer func(workspace.PrepareOptions) (workspace.PrepareResult, error)
@@ -475,6 +477,11 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 		return vm.RuntimeAssets{}, err
 	}
 	runtimeRootfsPath := filepath.Join(runtimeDir, "rootfs.ext4")
+	if r.RuntimeDir == "" || r.RuntimeFreeBytes != nil {
+		if err := ensureRuntimeCapacity(runtimeDir, layout.RootfsPath, cfg, r.runtimeFreeBytes); err != nil {
+			return vm.RuntimeAssets{}, err
+		}
+	}
 	if err := copyRuntimeRootfs(layout.RootfsPath, runtimeRootfsPath); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
@@ -573,13 +580,143 @@ func copyRuntimeRootfs(sourcePath, runtimePath string) error {
 	defer func() {
 		_ = dst.Close()
 	}()
-	if _, err := io.Copy(dst, src); err != nil {
+	if err := copySparseFile(dst, src, info.Size()); err != nil {
 		return fmt.Errorf("copy runtime rootfs: %w", err)
 	}
 	if err := dst.Sync(); err != nil {
 		return fmt.Errorf("sync runtime rootfs: %w", err)
 	}
 	return nil
+}
+
+func (r HostRunner) runtimeFreeBytes(path string) (uint64, error) {
+	if r.RuntimeFreeBytes != nil {
+		return r.RuntimeFreeBytes(path)
+	}
+	return runtimeFreeBytes(path)
+}
+
+func ensureRuntimeCapacity(runtimeDir, cachedRootfsPath string, cfg config.Config, freeBytes func(string) (uint64, error)) error {
+	required, err := estimateRuntimeDataRequirement(cachedRootfsPath, cfg)
+	if err != nil {
+		return err
+	}
+	available, err := freeBytes(runtimeDir)
+	if err != nil {
+		return fmt.Errorf("check runtime free space: %w", err)
+	}
+	if available >= required {
+		return nil
+	}
+	return fmt.Errorf(
+		"insufficient free space for runtime data in %s: need at least %s, have %s; reduce root_disk_mb/resources.disk_mb, free disk space, or move the runtime data root",
+		runtimeDir,
+		formatBytes(int64(required)),
+		formatBytes(int64(available)),
+	)
+}
+
+func estimateRuntimeDataRequirement(cachedRootfsPath string, cfg config.Config) (uint64, error) {
+	rootfsInfo, err := os.Stat(cachedRootfsPath)
+	if err != nil {
+		return 0, fmt.Errorf("stat cached rootfs: %w", err)
+	}
+
+	required := uint64(rootfsInfo.Size())
+	if target := uint64(cfg.Resources.RootDiskMB) * 1024 * 1024; target > required {
+		required = target
+	}
+	required += uint64(max(cfg.Resources.DiskMB, 64)) * 1024 * 1024
+	required += uint64(len(cfg.Volumes)) * uint64(max(cfg.Resources.DiskMB, 64)) * 1024 * 1024
+	required += 256 * 1024 * 1024
+	return required, nil
+}
+
+func runtimeFreeBytes(path string) (uint64, error) {
+	var stat unix.Statfs_t
+	if err := unix.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	return stat.Bavail * uint64(stat.Bsize), nil
+}
+
+func copySparseFile(dst, src *os.File, size int64) error {
+	const chunkSize = 4 << 20
+
+	if size == 0 {
+		return nil
+	}
+	if err := dst.Truncate(size); err != nil {
+		return err
+	}
+	if err := copySparseExtents(dst, src, size, chunkSize); err == nil {
+		return nil
+	} else if !isSparseSeekUnsupported(err) {
+		return err
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := dst.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if err := dst.Truncate(0); err != nil {
+		return err
+	}
+	_, err := io.CopyBuffer(dst, src, make([]byte, chunkSize))
+	return err
+}
+
+func copySparseExtents(dst, src *os.File, size int64, chunkSize int) error {
+	buf := make([]byte, chunkSize)
+	offset := int64(0)
+	for offset < size {
+		dataOffset, err := unix.Seek(int(src.Fd()), offset, unix.SEEK_DATA)
+		switch {
+		case err == nil:
+		case err == unix.ENXIO:
+			return nil
+		default:
+			return err
+		}
+		if dataOffset >= size {
+			return nil
+		}
+		holeOffset, err := unix.Seek(int(src.Fd()), dataOffset, unix.SEEK_HOLE)
+		if err != nil {
+			return err
+		}
+		if holeOffset > size {
+			holeOffset = size
+		}
+		remaining := holeOffset - dataOffset
+		if _, err := src.Seek(dataOffset, io.SeekStart); err != nil {
+			return err
+		}
+		if _, err := dst.Seek(dataOffset, io.SeekStart); err != nil {
+			return err
+		}
+		for remaining > 0 {
+			chunk := int64(len(buf))
+			if remaining < chunk {
+				chunk = remaining
+			}
+			n := int(chunk)
+			if _, err := io.ReadFull(src, buf[:n]); err != nil {
+				return err
+			}
+			if _, err := dst.Write(buf[:n]); err != nil {
+				return err
+			}
+			remaining -= chunk
+		}
+		offset = holeOffset
+	}
+	return nil
+}
+
+func isSparseSeekUnsupported(err error) bool {
+	return err == unix.ENXIO || err == unix.EINVAL || err == unix.ENOTSUP || err == unix.ENOSYS || err == unix.EOPNOTSUPP
 }
 
 func ensureRuntimeRootfsSize(imagePath string, minSizeMB int) error {

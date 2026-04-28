@@ -80,7 +80,10 @@ func (s *e2eSuite) newProject(t *testing.T) *e2eProject {
 }
 
 func hostKernelPath() string {
-	path := filepath.Join(os.Getenv("HOME"), ".cache", "keel", "kernel", "vmlinux")
+	path := strings.TrimSpace(os.Getenv("KEEL_E2E_KERNEL_PATH"))
+	if path == "" {
+		return ""
+	}
 	if _, err := os.Stat(path); err == nil {
 		return path
 	}

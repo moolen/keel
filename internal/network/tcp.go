@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const initialProxyInspectionTimeout = 10 * time.Second
+
 type TCPProxy struct {
 	Policy      *PolicyEngine
 	DialContext func(context.Context, string, string) (net.Conn, error)
@@ -179,7 +181,7 @@ func parseDestination(destination string) (net.IP, int, error) {
 }
 
 func readTLSClientPreface(conn net.Conn) ([]byte, string, error, error) {
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(initialProxyInspectionTimeout)); err != nil {
 		return nil, "", nil, err
 	}
 	defer func() {
@@ -275,7 +277,7 @@ func isIgnorableProxyError(err error) bool {
 }
 
 func readHTTPPreface(conn net.Conn) ([]byte, string, bool, error) {
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(initialProxyInspectionTimeout)); err != nil {
 		return nil, "", false, err
 	}
 	defer func() {

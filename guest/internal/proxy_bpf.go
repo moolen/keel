@@ -19,6 +19,7 @@ import (
 const (
 	bpfInterceptionRoot     = "/sys/fs/cgroup/keel"
 	bpfWorkloadCgroupPath   = bpfInterceptionRoot + "/workload"
+	bpfDockerCgroupPath     = bpfInterceptionRoot + "/docker"
 	bpfInterceptionMaxFlows = 4096
 )
 
@@ -28,17 +29,20 @@ type bpfOriginalDestination struct {
 }
 
 type bpfCgroupInterception struct {
-	workload *os.File
-	pending  *ebpf.Map
-	handoff  *ebpf.Map
-	connect4 *ebpf.Program
-	sockops  *ebpf.Program
-	links    []link.Link
+	workload       *os.File
+	pending        *ebpf.Map
+	handoff        *ebpf.Map
+	connect4       *ebpf.Program
+	connect4Docker *ebpf.Program
+	sockops        *ebpf.Program
+	links          []link.Link
 }
 
 func newBPFCgroupInterception() (trafficInterception, error) {
-	if err := os.MkdirAll(bpfWorkloadCgroupPath, 0o755); err != nil {
-		return nil, err
+	for _, path := range []string{bpfWorkloadCgroupPath, bpfDockerCgroupPath} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return nil, err
+		}
 	}
 
 	workload, err := os.Open(bpfWorkloadCgroupPath)
@@ -71,8 +75,17 @@ func newBPFCgroupInterception() (trafficInterception, error) {
 		return nil, err
 	}
 
-	connect4, err := newConnect4Program(pending)
+	connect4Workload, err := newConnect4Program(pending, storedNetworkUint32(0x7f000001))
 	if err != nil {
+		_ = handoff.Close()
+		_ = pending.Close()
+		_ = workload.Close()
+		return nil, err
+	}
+
+	connect4Docker, err := newConnect4Program(pending, storedNetworkUint32(0xac110001))
+	if err != nil {
+		_ = connect4Workload.Close()
 		_ = handoff.Close()
 		_ = pending.Close()
 		_ = workload.Close()
@@ -81,36 +94,19 @@ func newBPFCgroupInterception() (trafficInterception, error) {
 
 	sockops, err := newSockopsProgram(pending, handoff)
 	if err != nil {
-		_ = connect4.Close()
+		_ = connect4Docker.Close()
+		_ = connect4Workload.Close()
 		_ = handoff.Close()
 		_ = pending.Close()
 		_ = workload.Close()
 		return nil, err
 	}
 
-	connectLink, err := link.AttachCgroup(link.CgroupOptions{
-		Path:    bpfWorkloadCgroupPath,
-		Attach:  ebpf.AttachCGroupInet4Connect,
-		Program: connect4,
-	})
+	links, err := attachCgroupInterceptionPrograms(connect4Workload, connect4Docker, sockops)
 	if err != nil {
 		_ = sockops.Close()
-		_ = connect4.Close()
-		_ = handoff.Close()
-		_ = pending.Close()
-		_ = workload.Close()
-		return nil, err
-	}
-
-	sockopsLink, err := link.AttachCgroup(link.CgroupOptions{
-		Path:    bpfWorkloadCgroupPath,
-		Attach:  ebpf.AttachCGroupSockOps,
-		Program: sockops,
-	})
-	if err != nil {
-		_ = connectLink.Close()
-		_ = sockops.Close()
-		_ = connect4.Close()
+		_ = connect4Docker.Close()
+		_ = connect4Workload.Close()
 		_ = handoff.Close()
 		_ = pending.Close()
 		_ = workload.Close()
@@ -118,13 +114,43 @@ func newBPFCgroupInterception() (trafficInterception, error) {
 	}
 
 	return &bpfCgroupInterception{
-		workload: workload,
-		pending:  pending,
-		handoff:  handoff,
-		connect4: connect4,
-		sockops:  sockops,
-		links:    []link.Link{connectLink, sockopsLink},
+		workload:       workload,
+		pending:        pending,
+		handoff:        handoff,
+		connect4:       connect4Workload,
+		connect4Docker: connect4Docker,
+		sockops:        sockops,
+		links:          links,
 	}, nil
+}
+
+func attachCgroupInterceptionPrograms(connect4Workload, connect4Docker, sockops *ebpf.Program) ([]link.Link, error) {
+	attachments := []struct {
+		path    string
+		attach  ebpf.AttachType
+		program *ebpf.Program
+	}{
+		{path: bpfWorkloadCgroupPath, attach: ebpf.AttachCGroupInet4Connect, program: connect4Workload},
+		{path: bpfWorkloadCgroupPath, attach: ebpf.AttachCGroupSockOps, program: sockops},
+		{path: bpfDockerCgroupPath, attach: ebpf.AttachCGroupInet4Connect, program: connect4Docker},
+		{path: bpfDockerCgroupPath, attach: ebpf.AttachCGroupSockOps, program: sockops},
+	}
+	links := make([]link.Link, 0, len(attachments))
+	for _, attachment := range attachments {
+		item, err := link.AttachCgroup(link.CgroupOptions{
+			Path:    attachment.path,
+			Attach:  attachment.attach,
+			Program: attachment.program,
+		})
+		if err != nil {
+			for _, existing := range links {
+				_ = existing.Close()
+			}
+			return nil, err
+		}
+		links = append(links, item)
+	}
+	return links, nil
 }
 
 func (b *bpfCgroupInterception) mode() string { return bpfCgroupMode }
@@ -139,12 +165,9 @@ func (b *bpfCgroupInterception) workloadCgroupFD() int {
 func (b *bpfCgroupInterception) attachCommand(*exec.Cmd) {}
 
 func (b *bpfCgroupInterception) resolveOriginalDestination(conn net.Conn) (string, bool, error) {
-	remoteHost, remotePort, err := splitTCPRemoteAddr(conn.RemoteAddr())
+	_, remotePort, err := splitTCPRemoteAddr(conn.RemoteAddr())
 	if err != nil {
 		return "", false, err
-	}
-	if !remoteHost.IsLoopback() {
-		return "", false, nil
 	}
 
 	key := uint32(remotePort)
@@ -173,6 +196,9 @@ func (b *bpfCgroupInterception) close() error {
 	}
 	if b.connect4 != nil {
 		err = errors.Join(err, b.connect4.Close())
+	}
+	if b.connect4Docker != nil {
+		err = errors.Join(err, b.connect4Docker.Close())
 	}
 	if b.handoff != nil {
 		err = errors.Join(err, b.handoff.Close())
@@ -211,7 +237,7 @@ func formatBPFOriginalDestination(destination bpfOriginalDestination) (string, e
 	return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
 }
 
-func newConnect4Program(pending *ebpf.Map) (*ebpf.Program, error) {
+func newConnect4Program(pending *ebpf.Map, targetIP uint32) (*ebpf.Program, error) {
 	offsets := sockAddrOffsets()
 	loopbackIP := storedNetworkUint32(0x7f000001)
 	proxyPort := storedNetworkPortUint32(uint16(tcpProxyPort))
@@ -221,7 +247,9 @@ func newConnect4Program(pending *ebpf.Map) (*ebpf.Program, error) {
 		asm.LoadMem(asm.R2, asm.R6, offsets.protocol, asm.Word),
 		asm.JNE.Imm(asm.R2, unix.IPPROTO_TCP, "allow"),
 		asm.LoadMem(asm.R2, asm.R6, offsets.userIP4, asm.Word),
-		asm.JNE.Imm(asm.R2, int32(loopbackIP), "capture"),
+		asm.JEq.Imm(asm.R2, int32(loopbackIP), "allow"),
+		asm.LoadMem(asm.R2, asm.R6, offsets.userIP4, asm.Word),
+		asm.JNE.Imm(asm.R2, int32(targetIP), "capture"),
 		asm.LoadMem(asm.R2, asm.R6, offsets.userPort, asm.Word),
 		asm.JEq.Imm(asm.R2, int32(proxyPort), "allow"),
 
@@ -240,7 +268,7 @@ func newConnect4Program(pending *ebpf.Map) (*ebpf.Program, error) {
 		asm.Mov.Imm(asm.R4, 0),
 		asm.FnMapUpdateElem.Call(),
 		asm.JNE.Imm(asm.R0, 0, "allow"),
-		asm.Mov.Imm(asm.R2, int32(loopbackIP)),
+		asm.Mov.Imm(asm.R2, int32(targetIP)),
 		asm.StoreMem(asm.R6, offsets.userIP4, asm.R2, asm.Word),
 		asm.Mov.Imm(asm.R2, int32(proxyPort)),
 		asm.StoreMem(asm.R6, offsets.userPort, asm.R2, asm.Word),

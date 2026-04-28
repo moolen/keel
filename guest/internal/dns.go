@@ -15,7 +15,7 @@ import (
 const (
 	hostCID = 2
 	dnsPort = 3053
-	dnsAddr = "127.0.0.1:53"
+	dnsAddr = "0.0.0.0:53"
 )
 
 func StartDNSForwarder(ctx context.Context) error {

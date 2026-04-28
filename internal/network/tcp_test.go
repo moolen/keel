@@ -1,14 +1,18 @@
 package network
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -249,6 +253,220 @@ func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
 	if !strings.Contains(got, "would_deny destination=198.51.100.25:80 sni= rule=default reason=tcp destination not correlated") {
 		t.Fatalf("events = %q, want would_deny audit log", got)
 	}
+}
+
+func TestTCPProxyHandlesConcurrentHTTPRequests(t *testing.T) {
+	const requestCount = 64
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("ReadAll() error = %v", err)
+			http.Error(w, "read failed", http.StatusInternalServerError)
+			return
+		}
+		defer r.Body.Close()
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprintf(w, "%s|%s", r.URL.Path, body)
+	}))
+	defer upstream.Close()
+
+	upstreamAddr := upstream.Listener.Addr().String()
+	upstreamHost, upstreamPort, err := net.SplitHostPort(upstreamAddr)
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+	upstreamIP := net.ParseIP(upstreamHost)
+	if upstreamIP == nil {
+		t.Fatalf("ParseIP(%q) = nil", upstreamHost)
+	}
+
+	tracker := NewTracker(60 * time.Second)
+	tracker.Observe("upstream.test", upstreamIP, 30*time.Second, time.Unix(100, 0))
+	summary := NewSummary()
+	engine := NewPolicyEngine(PolicyConfig{}, tracker)
+
+	var dialCount atomic.Int64
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		Now: func() time.Time {
+			return time.Unix(110, 0)
+		},
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialCount.Add(1)
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		},
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, requestCount)
+	for i := 0; i < requestCount; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			clientSide, proxySide := net.Pipe()
+			defer clientSide.Close()
+
+			handleErr := make(chan error, 1)
+			go func() {
+				handleErr <- proxy.handleConn(context.Background(), proxySide)
+			}()
+
+			payload := fmt.Sprintf("payload-%03d", i)
+			targetURL := fmt.Sprintf("http://%s/req-%03d", upstreamAddr, i)
+			req := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", targetURL, upstreamAddr, len(payload), payload)
+			if err := writeDestinationHeader(clientSide, net.JoinHostPort(upstreamHost, upstreamPort)); err != nil {
+				errCh <- fmt.Errorf("writeDestinationHeader(%d): %w", i, err)
+				return
+			}
+			if _, err := io.WriteString(clientSide, req); err != nil {
+				errCh <- fmt.Errorf("WriteString(%d): %w", i, err)
+				return
+			}
+
+			resp, err := http.ReadResponse(bufio.NewReader(clientSide), nil)
+			if err != nil {
+				errCh <- fmt.Errorf("ReadResponse(%d): %w", i, err)
+				return
+			}
+			body, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				errCh <- fmt.Errorf("ReadAll body(%d): %w", i, err)
+				return
+			}
+			wantBody := fmt.Sprintf("/req-%03d|%s", i, payload)
+			if string(body) != wantBody {
+				errCh <- fmt.Errorf("response body(%d) = %q, want %q", i, string(body), wantBody)
+				return
+			}
+			_ = clientSide.Close()
+			if err := <-handleErr; err != nil {
+				errCh <- fmt.Errorf("handleConn(%d): %w", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got, want := dialCount.Load(), int64(requestCount); got != want {
+		t.Fatalf("dialCount = %d, want %d", got, want)
+	}
+	assertSummaryReportContains(t, summary, "tcp  upstream.test:"+upstreamPort+" policy=allowed count=64")
+}
+
+func TestTCPProxyHandlesConcurrentRawStreams(t *testing.T) {
+	const streamCount = 64
+
+	upstreamListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer upstreamListener.Close()
+
+	go func() {
+		for {
+			conn, err := upstreamListener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				if _, err := io.Copy(conn, conn); err != nil && err != io.EOF && !strings.Contains(err.Error(), "closed") {
+					t.Errorf("echo server copy error = %v", err)
+				}
+			}(conn)
+		}
+	}()
+
+	upstreamHost, upstreamPort, err := net.SplitHostPort(upstreamListener.Addr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+	upstreamIP := net.ParseIP(upstreamHost)
+	if upstreamIP == nil {
+		t.Fatalf("ParseIP(%q) = nil", upstreamHost)
+	}
+
+	tracker := NewTracker(60 * time.Second)
+	tracker.Observe("tunnel.test", upstreamIP, 30*time.Second, time.Unix(100, 0))
+	summary := NewSummary()
+	engine := NewPolicyEngine(PolicyConfig{}, tracker)
+
+	var dialCount atomic.Int64
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		Now: func() time.Time {
+			return time.Unix(110, 0)
+		},
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialCount.Add(1)
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		},
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, streamCount)
+	for i := 0; i < streamCount; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			clientSide, proxySide := net.Pipe()
+			defer clientSide.Close()
+
+			handleErr := make(chan error, 1)
+			go func() {
+				handleErr <- proxy.handleConn(context.Background(), proxySide)
+			}()
+
+			if err := writeDestinationHeader(clientSide, net.JoinHostPort(upstreamHost, upstreamPort)); err != nil {
+				errCh <- fmt.Errorf("writeDestinationHeader(%d): %w", i, err)
+				return
+			}
+
+			payload := strings.Repeat(fmt.Sprintf("chunk-%03d-", i), 128)
+			if _, err := io.WriteString(clientSide, payload); err != nil {
+				errCh <- fmt.Errorf("stream write(%d): %w", i, err)
+				return
+			}
+			reply := make([]byte, len(payload))
+			if _, err := io.ReadFull(clientSide, reply); err != nil {
+				errCh <- fmt.Errorf("stream read(%d): %w", i, err)
+				return
+			}
+			if string(reply) != payload {
+				errCh <- fmt.Errorf("stream payload(%d) mismatch", i)
+				return
+			}
+			_ = clientSide.Close()
+			if err := <-handleErr; err != nil {
+				errCh <- fmt.Errorf("handleConn(%d): %w", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got, want := dialCount.Load(), int64(streamCount); got != want {
+		t.Fatalf("dialCount = %d, want %d", got, want)
+	}
+	assertSummaryReportContains(t, summary, "tcp  tunnel.test:"+upstreamPort+" policy=allowed count=64")
 }
 
 func mustClientHelloBytesForTCP(t *testing.T, serverName string) []byte {

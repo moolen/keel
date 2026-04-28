@@ -2,11 +2,14 @@ package test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -58,6 +61,32 @@ func requireE2EPrerequisites(t *testing.T) {
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skipf("/dev/kvm unavailable: %v", err)
 	}
+}
+
+func requireFreeDiskSpace(t *testing.T, path string, minBytes uint64) {
+	t.Helper()
+
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		t.Skipf("could not check free space for %s: %v", path, err)
+	}
+	available := stat.Bavail * uint64(stat.Bsize)
+	if available < minBytes {
+		t.Skipf("insufficient free space on %s: have %s, need at least %s", path, formatBytes(available), formatBytes(minBytes))
+	}
+}
+
+func formatBytes(value uint64) string {
+	const unit = 1024
+	if value < unit {
+		return strconv.FormatUint(value, 10) + "B"
+	}
+	div, exp := uint64(unit), 0
+	for n := value / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%ciB", float64(value)/float64(div), "KMGTPE"[exp])
 }
 
 func findRepoRoot(t *testing.T) string {

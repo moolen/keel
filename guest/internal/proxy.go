@@ -351,6 +351,7 @@ func proxyEnvironment(base []string) []string {
 		"https_proxy="+proxyURL,
 		"NO_PROXY=127.0.0.1,localhost",
 		"no_proxy=127.0.0.1,localhost",
+		"DOCKER_BUILDKIT=0",
 		"DOCKER_CONFIG=/etc/docker/client",
 	)
 	return env

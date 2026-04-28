@@ -7,8 +7,9 @@ import (
 )
 
 var (
-	RuntimeDataRoot    = "/var/lib/keel/runtime"
-	RuntimeControlRoot = "/var/run/keel"
+	RuntimeDataRoot         = "/var/lib/keel/runtime"
+	RuntimeControlRoot      = "/var/run/keel"
+	RuntimeFallbackDataRoot = "/var/tmp/keel/runtime"
 )
 
 func RuntimeTempRoot() string {
@@ -48,6 +49,9 @@ func NewTempDir(pattern string) (string, error) {
 func resolveRuntimeDataRoot() string {
 	if ensureWritableRoot(RuntimeDataRoot) == nil {
 		return RuntimeDataRoot
+	}
+	if ensureWritableRoot(RuntimeFallbackDataRoot) == nil {
+		return RuntimeFallbackDataRoot
 	}
 	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
 		return filepath.Join(cacheDir, "keel", "runtime")

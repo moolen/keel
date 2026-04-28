@@ -18,6 +18,7 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 	var daemonEnv []string
 	var removedPaths []string
 	var removedAllPaths []string
+	var ranCommands [][]string
 
 	runner := Runner{
 		LookupPath: func(file string) (string, error) {
@@ -38,12 +39,15 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 			removedAllPaths = append(removedAllPaths, path)
 			return nil
 		},
-		StartProcess: func(_ context.Context, name string, args []string, env []string, dir string) error {
+		StartProcess: func(_ context.Context, name string, args []string, env []string, dir string, cgroupFD int) error {
 			startedName = name
 			startedArgs = append([]string(nil), args...)
 			startedEnv = append([]string(nil), env...)
 			if dir != "/" {
 				t.Fatalf("start dir = %q, want /", dir)
+			}
+			if cgroupFD != 11 {
+				t.Fatalf("start cgroup fd = %d, want 11", cgroupFD)
 			}
 			return nil
 		},
@@ -58,6 +62,11 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 			daemonEnv = append([]string(nil), env...)
 			return nil
 		},
+		RunCommand: func(name string, args ...string) error {
+			ranCommands = append(ranCommands, append([]string{name}, args...))
+			return nil
+		},
+		WorkloadCgroupFD: 11,
 	}
 
 	err := runner.RunConfigured(context.Background(), []ConfiguredFeature{{
@@ -74,8 +83,13 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 	if _, ok := writes["/etc/docker/daemon.json"]; !ok {
 		t.Fatalf("daemon config was not written: %#v", writes)
 	}
+	for _, want := range []string{"/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv4/conf/all/forwarding"} {
+		if got := writes[want]; got != "1\n" {
+			t.Fatalf("proc write %q = %q, want 1\\n", want, got)
+		}
+	}
 	text := writes["/etc/docker/daemon.json"]
-	for _, want := range []string{`"storage-driver":"vfs"`, `"https://mirror.gcr.io"`, `"iptables":false`, `"ip-forward":false`, `"ip-masq":false`, `"bip":"172.17.0.1/16"`, `"userland-proxy":false`} {
+	for _, want := range []string{`"storage-driver":"vfs"`, `"https://mirror.gcr.io"`, `"iptables":true`, `"ip6tables":false`, `"dns":["172.17.0.1"]`, `"ip-forward":true`, `"ip-masq":true`, `"bip":"172.17.0.1/16"`, `"userland-proxy":false`, `"cgroup-parent":"/keel/docker"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("daemon.json missing %q in %s", want, text)
 		}
@@ -116,6 +130,12 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 	if !waitedForDaemon {
 		t.Fatal("expected WaitForDaemon to be called")
 	}
+	if !reflect.DeepEqual(ranCommands, [][]string{
+		{"/usr/local/bin/iptables", "-t", "nat", "-I", "PREROUTING", "1", "-s", "172.17.0.0/16", "-p", "tcp", "-d", "172.17.0.1", "--dport", "3128", "-j", "RETURN"},
+		{"/usr/local/bin/iptables", "-t", "nat", "-A", "PREROUTING", "-s", "172.17.0.0/16", "-p", "tcp", "-j", "REDIRECT", "--to-ports", "3128"},
+	}) {
+		t.Fatalf("RunCommand calls = %#v", ranCommands)
+	}
 }
 
 func TestRunConfiguredSkipsWhenDockerFeatureAbsent(t *testing.T) {
@@ -155,9 +175,10 @@ func TestDockerFeatureWritesCACertWhenConfigured(t *testing.T) {
 		},
 		Remove:        func(string) error { return nil },
 		RemoveAll:     func(string) error { return nil },
-		StartProcess:  func(context.Context, string, []string, []string, string) error { return nil },
+		StartProcess:  func(context.Context, string, []string, []string, string, int) error { return nil },
 		WaitForFile:   func(string) error { return nil },
 		WaitForDaemon: func([]string) error { return nil },
+		RunCommand:    func(string, ...string) error { return nil },
 	}
 
 	err := runner.RunConfigured(context.Background(), []ConfiguredFeature{{
