@@ -345,6 +345,17 @@ cat /tmp/out
 		denied.requireFailure(t)
 		requireContainsAll(t, denied.Stderr, "tcp  httpbin.org:443 policy=denied")
 
+		// Verify deny_if_no_sni is enforced on non-standard TLS ports too.
+		deniedNonStd := project.run(t, "", bash(`
+set -eu
+apt-get update >/dev/null
+apt-get install -y openssl >/dev/null
+echo | openssl s_client -connect httpbin.org:8443 -noservername >/tmp/out_8443 2>&1
+cat /tmp/out_8443
+`)...)
+		deniedNonStd.requireFailure(t)
+		requireContainsAll(t, deniedNonStd.Stderr, "tcp  httpbin.org:8443 policy=denied")
+
 		project.writeConfig(t, "ubuntu:24.04", yamlBlock(
 			"network:",
 			"  deny_if_no_sni: false",
@@ -365,6 +376,39 @@ cat /tmp/out
 `)...)
 		allowed.requireSuccess(t)
 		requireContainsAll(t, allowed.Stderr, "tcp  httpbin.org:443 policy=allowed")
+	})
+
+	t.Run("Non-Standard Port TLS SNI", func(t *testing.T) {
+		// Verify that TLS SNI policy (denied_sni, allowed_sni, deny_if_no_sni)
+		// is enforced on non-standard TLS ports, not only port 443.
+		project := s.newProject(t)
+		project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
+			"network:",
+			"  dns:",
+			"    allowed:",
+			"      - httpbin.org",
+			"  tls:",
+			"    denied_sni:",
+			"      - httpbin.org",
+		))
+
+		// Port 443: denied by SNI (baseline).
+		denied443 := project.run(t, "", sh(`curl --connect-timeout 5 https://httpbin.org/get || echo SNI_DENIED_443`)...)
+		denied443.requireSuccess(t)
+		requireContainsAll(t, denied443.Stdout, "SNI_DENIED_443")
+		requireContainsAll(t, denied443.Stderr, "tcp  httpbin.org:443 policy=denied")
+
+		// Port 8443: must also be denied by SNI, not allowed via DNS correlation.
+		// Before the fix, non-standard ports bypassed SNI checks and would show
+		// "policy=allowed" (allowed via dns correlation) instead of "policy=denied".
+		denied8443 := project.run(t, "", sh(`curl --connect-timeout 5 https://httpbin.org:8443/ || echo SNI_DENIED_8443`)...)
+		denied8443.requireSuccess(t)
+		requireContainsAll(t, denied8443.Stdout, "SNI_DENIED_8443")
+		requireContainsAll(t, denied8443.Stderr,
+			"dns  httpbin.org:53 policy=allowed",
+			"tcp  httpbin.org:8443 policy=denied",
+		)
+		requireNotContains(t, denied8443.Stderr, "tcp  httpbin.org:8443 policy=allowed")
 	})
 }
 
