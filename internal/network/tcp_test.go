@@ -205,6 +205,62 @@ func TestTCPProxyDeniesMismatchedTLSSNI(t *testing.T) {
 	assertSummaryReportContains(t, summary, "tcp  evil.github.com:443 policy=denied count=1")
 }
 
+func TestTCPProxyPeeksTLSSNIOnNonStandardPort(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	summary := NewSummary()
+	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
+
+	engine := NewPolicyEngine(PolicyConfig{
+		TLS: RuleSet{
+			Allowed: []string{"*.github.com"},
+		},
+		DenyIfNoSNI: true,
+	}, tracker)
+
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+
+	var dialed bool
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		Now: func() time.Time {
+			return time.Unix(110, 0)
+		},
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, fmt.Errorf("unexpected dial")
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- proxy.handleConn(context.Background(), proxySide)
+	}()
+
+	// Use a non-standard TLS port (8443) — SNI must still be extracted.
+	if err := writeDestinationHeader(clientSide, "203.0.113.10:8443"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	if _, err := clientSide.Write(mustClientHelloBytesForTCP(t, "evil.github.com")); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+	_ = clientSide.Close()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handleConn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+	if dialed {
+		t.Fatal("dialer was called for mismatched TLS SNI on non-standard port")
+	}
+	assertSummaryReportContains(t, summary, "tcp  evil.github.com:8443 policy=denied count=1")
+}
+
 func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
 	engine := NewPolicyEngine(PolicyConfig{
 		Audit: true,

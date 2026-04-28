@@ -57,7 +57,7 @@ func (e *PolicyEngine) EvaluateDNS(domain string) Decision {
 	return e.applyAudit(Decision{Reason: "dns not allowlisted", Rule: "default"})
 }
 
-func (e *PolicyEngine) EvaluateTCP(ip net.IP, port int, sni string, now time.Time) Decision {
+func (e *PolicyEngine) EvaluateTCP(ip net.IP, port int, sni string, isTLS bool, now time.Time) Decision {
 	if ip == nil {
 		return e.applyAudit(Decision{Reason: "missing destination ip", Rule: "default"})
 	}
@@ -73,7 +73,7 @@ func (e *PolicyEngine) EvaluateTCP(ip net.IP, port int, sni string, now time.Tim
 	}
 
 	if len(domains) > 0 {
-		if port == 443 {
+		if isTLS {
 			if e.config.DenyIfNoSNI && sni == "" {
 				return e.applyAudit(Decision{Reason: "tls sni required", Rule: "deny_if_no_sni"})
 			}

@@ -85,19 +85,18 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	preface := []byte(nil)
 	sni := ""
 	inspectErr := error(nil)
-	if port == 443 {
-		preface, sni, inspectErr, err = readTLSClientPreface(conn)
-		if err != nil {
-			return err
-		}
+	preface, sni, inspectErr, err = readTLSClientPreface(conn)
+	if err != nil {
+		return err
 	}
+	isTLS := looksLikeTLSHandshakeRecord(preface)
 
 	now := time.Now()
 	if p.Now != nil {
 		now = p.Now()
 	}
-	decision := p.Policy.EvaluateTCP(ip, port, sni, now)
-	if decision.Allowed && port == 443 && p.MITM != nil && p.MITM.Enabled && tlsInspectionRequired(preface, sni, inspectErr) {
+	decision := p.Policy.EvaluateTCP(ip, port, sni, isTLS, now)
+	if decision.Allowed && p.MITM != nil && p.MITM.Enabled && tlsInspectionRequired(preface, sni, inspectErr) {
 		decision = Decision{Reason: "mitm inspection required but client hello parsing failed", Rule: "mitm"}
 	}
 	p.Summary.RecordTCP(summaryHost(p.Policy, ip, sni, now), port, decision)
@@ -107,8 +106,12 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	}
 	p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
 
-	if p.MITM != nil && port == 80 && p.MITM.Enabled {
-		httpPreface, host, isHTTP, err := readHTTPPreface(conn)
+	if p.MITM != nil && !isTLS && p.MITM.Enabled {
+		connToRead := conn
+		if len(preface) > 0 {
+			connToRead = &prefixedConn{Conn: conn, prefix: bytes.NewReader(preface)}
+		}
+		httpPreface, host, isHTTP, err := readHTTPPreface(connToRead)
 		if err != nil {
 			return err
 		}
@@ -121,7 +124,7 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 		preface = httpPreface
 	}
 
-	if p.MITM != nil && port == 443 && len(preface) > 0 && sni != "" && p.MITM.EnabledFor(sni) {
+	if p.MITM != nil && isTLS && len(preface) > 0 && sni != "" && p.MITM.EnabledFor(sni) {
 		return p.MITM.HandleTLS(ctx, &prefixedConn{
 			Conn:   conn,
 			prefix: bytes.NewReader(preface),
@@ -182,21 +185,38 @@ func parseDestination(destination string) (net.IP, int, error) {
 
 func readTLSClientPreface(conn net.Conn) ([]byte, string, error, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(initialProxyInspectionTimeout)); err != nil {
+		if errors.Is(err, io.ErrClosedPipe) {
+			return nil, "", nil, nil
+		}
 		return nil, "", nil, err
 	}
 	defer func() {
 		_ = conn.SetReadDeadline(time.Time{})
 	}()
 
-	header := make([]byte, 5)
-	if _, err := io.ReadFull(conn, header); err != nil {
+	// Peek the first byte to detect TLS handshake records before committing
+	// to reading the full ClientHello.
+	first := make([]byte, 1)
+	if _, err := io.ReadFull(conn, first); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) {
+			return nil, "", nil, nil
+		}
 		return nil, "", nil, err
+	}
+	if first[0] != 0x16 {
+		return first, "", nil, nil
+	}
+
+	header := make([]byte, 5)
+	header[0] = first[0]
+	if _, err := io.ReadFull(conn, header[1:]); err != nil {
+		return first, "", nil, err
 	}
 	recordLength := int(binary.BigEndian.Uint16(header[3:5]))
 	data := make([]byte, 5+recordLength)
 	copy(data, header)
 	if _, err := io.ReadFull(conn, data[5:]); err != nil {
-		return nil, "", nil, err
+		return header, "", nil, err
 	}
 	sni, parseErr := parseClientHelloSNI(data)
 	return data, sni, parseErr, nil

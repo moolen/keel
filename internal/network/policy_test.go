@@ -32,7 +32,7 @@ func TestPolicyAllowsDNSAndCorrelatedTLS(t *testing.T) {
 	}
 
 	tracker.Observe("api.github.com", net.ParseIP("140.82.112.6"), 30*time.Second, time.Unix(100, 0))
-	decision := engine.EvaluateTCP(net.ParseIP("140.82.112.6"), 443, "api.github.com", time.Unix(110, 0))
+	decision := engine.EvaluateTCP(net.ParseIP("140.82.112.6"), 443, "api.github.com", true, time.Unix(110, 0))
 	if !decision.Allowed {
 		t.Fatalf("EvaluateTCP() denied: %+v", decision)
 	}
@@ -40,7 +40,7 @@ func TestPolicyAllowsDNSAndCorrelatedTLS(t *testing.T) {
 		t.Fatalf("decision.Rule = %q, want dns:api.github.com", decision.Rule)
 	}
 
-	decision = engine.EvaluateTCP(net.ParseIP("140.82.112.6"), 443, "", time.Unix(110, 0))
+	decision = engine.EvaluateTCP(net.ParseIP("140.82.112.6"), 443, "", true, time.Unix(110, 0))
 	if decision.Allowed {
 		t.Fatalf("expected deny without SNI: %+v", decision)
 	}
@@ -66,7 +66,7 @@ func TestPolicyAuditConvertsDeniedDecisions(t *testing.T) {
 		t.Fatalf("dnsDecision.Rule = %q, want gist.github.com", dnsDecision.Rule)
 	}
 
-	tcpDecision := engine.EvaluateTCP(net.ParseIP("140.82.112.6"), 443, "", time.Unix(110, 0))
+	tcpDecision := engine.EvaluateTCP(net.ParseIP("140.82.112.6"), 443, "", true, time.Unix(110, 0))
 	if !tcpDecision.Allowed || !tcpDecision.WouldDeny {
 		t.Fatalf("EvaluateTCP() = %+v, want allowed+would_deny", tcpDecision)
 	}
