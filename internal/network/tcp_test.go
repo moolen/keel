@@ -313,6 +313,57 @@ func TestTCPProxyDeniesRequiredMITMWhenClientHelloCannotBeParsed(t *testing.T) {
 	assertSummaryReportContains(t, summary, "tcp  api.github.com:443 policy=denied count=1")
 }
 
+func TestTCPProxyDeniesRequiredMITMWhenClientHelloHasNoSNI(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{
+			Host:         "api.github.com",
+			Port:         443,
+			MITMRequired: true,
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
+
+	summary := NewSummary()
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+	var dialed bool
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		MITM:    &MITMProxy{Enabled: true},
+		Now:     func() time.Time { return time.Unix(110, 0) },
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, fmt.Errorf("unexpected dial")
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proxy.handleConn(context.Background(), proxySide) }()
+
+	if err := writeDestinationHeader(clientSide, "203.0.113.10:443"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	if _, err := clientSide.Write(mustClientHelloBytesWithoutSNIForTCP(t)); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+	_ = clientSide.Close()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handleConn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+	if dialed {
+		t.Fatal("dialer was called for required MITM without SNI")
+	}
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:443 policy=denied count=1")
+}
+
 func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
 	engine := NewPolicyEngine(PolicyConfig{
 		Audit: true,
@@ -606,6 +657,43 @@ func mustClientHelloBytesForTCP(t *testing.T, serverName string) []byte {
 			InsecureSkipVerify: true,
 			ServerName:         serverName,
 		}
+		_ = tls.Client(clientConn, cfg).HandshakeContext(context.Background())
+	}()
+
+	select {
+	case data := <-payload:
+		return data
+	case err := <-errCh:
+		t.Fatalf("failed to capture ClientHello: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ClientHello")
+	}
+
+	return nil
+}
+
+func mustClientHelloBytesWithoutSNIForTCP(t *testing.T) []byte {
+	t.Helper()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	payload := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		buf := make([]byte, 4096)
+		n, err := serverConn.Read(buf)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		payload <- append([]byte(nil), buf[:n]...)
+	}()
+
+	go func() {
+		cfg := &tls.Config{InsecureSkipVerify: true}
 		_ = tls.Client(clientConn, cfg).HandshakeContext(context.Background())
 	}()
 

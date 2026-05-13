@@ -97,7 +97,7 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	}
 	decision := p.Policy.EvaluateTCP(ip, port, sni, isTLS, now)
 	if decision.Allowed && decision.MITMRequired {
-		if !isTLS || tlsInspectionRequired(preface, sni, inspectErr) || p.MITM == nil || !p.MITM.Enabled {
+		if !isTLS || sni == "" || tlsInspectionRequired(preface, sni, inspectErr) || p.MITM == nil || !p.MITM.Enabled {
 			decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
 		}
 	}
