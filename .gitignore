@@ -1,5 +1,6 @@
 .cache/
 .tmp/
+.worktrees/
 bin/
 dist/
 /keel

@@ -27,8 +27,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
     awscli \
     bash \
+    bpftool \
     build-essential \
     ca-certificates \
+    clang \
     curl \
     containerd.io \
     docker-buildx-plugin \
@@ -46,8 +48,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iptables \
     jq \
     less \
+    libbpf-dev \
     libffi-dev \
     libssl-dev \
+    linux-libc-dev \
     make \
     netcat-openbsd \
     openssh-client \
@@ -65,6 +69,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tar \
     uidmap \
     unzip \
+    llvm \
     vim-tiny \
     wget \
     xz-utils \
