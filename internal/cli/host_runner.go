@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -139,7 +138,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	if factory != nil {
 		startServices := r.ServiceStarter
 		if startServices == nil {
-			startServices = r.startServices
+			startServices = defaultNetworkServiceStarter
 		}
 		progress.Step(startupPhase(9, "starting vm services", "starting dns and tcp policy proxies"))
 		stopServices, summary, err := startServices(ctx, cfg, assets)
@@ -207,7 +206,7 @@ func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *
 	defer cleanup()
 
 	progress.Step(startupPhase(9, "starting vm services", "starting dns and tcp policy proxies"))
-	stopServices, summary, err := r.startVMServices(ctx, req.Config, instance)
+	stopServices, summary, err := keelruntime.NetworkServiceFactory{}.StartVM(ctx, req.Config, instance)
 	if err != nil {
 		return err
 	}
@@ -281,89 +280,6 @@ func (r HostRunner) warnNetworkAuditMode(req RunRequest) {
 	_, _ = fmt.Fprintln(stderr, "warning: network audit mode enabled; proxy policy denies will be allowed at runtime and reported as would_deny")
 }
 
-func (r HostRunner) startServices(ctx context.Context, cfg config.Config, assets vm.RuntimeAssets) (func(), *network.Summary, error) {
-	serviceCtx, cancel := context.WithCancel(ctx)
-	errCh := make(chan error, 1)
-
-	dnsProxy, tcpProxy, summary, err := buildNetworkServices(cfg)
-	if err != nil {
-		cancel()
-		return nil, nil, err
-	}
-	go func() {
-		errCh <- dnsProxy.Serve(serviceCtx, assets.VSockPath)
-	}()
-	go func() {
-		errCh <- tcpProxy.Serve(serviceCtx, assets.VSockPath)
-	}()
-	socketPaths := []string{
-		assets.VSockPath + "_3053",
-		assets.VSockPath + "_3128",
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		ready := true
-		for _, socketPath := range socketPaths {
-			if _, err := os.Stat(socketPath); err != nil {
-				ready = false
-				break
-			}
-		}
-		if ready {
-			return cancel, summary, nil
-		}
-		select {
-		case err := <-errCh:
-			cancel()
-			return nil, nil, err
-		default:
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			return nil, nil, fmt.Errorf("dns proxy did not start in time")
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-}
-
-func (r HostRunner) startVMServices(ctx context.Context, cfg config.Config, instance hypervisor.VM) (func(), *network.Summary, error) {
-	serviceCtx, cancel := context.WithCancel(ctx)
-	errCh := make(chan error, 2)
-
-	dnsProxy, tcpProxy, summary, err := buildNetworkServices(cfg)
-	if err != nil {
-		cancel()
-		return nil, nil, err
-	}
-
-	dnsListener, err := instance.VSockListen(3053)
-	if err != nil {
-		cancel()
-		return nil, nil, err
-	}
-	tcpListener, err := instance.VSockListen(3128)
-	if err != nil {
-		cancel()
-		_ = dnsListener.Close()
-		return nil, nil, err
-	}
-
-	go func() {
-		errCh <- dnsProxy.ServeListener(serviceCtx, dnsListener)
-	}()
-	go func() {
-		errCh <- tcpProxy.ServeListener(serviceCtx, tcpListener)
-	}()
-
-	select {
-	case err := <-errCh:
-		cancel()
-		return nil, nil, err
-	default:
-	}
-	return cancel, summary, nil
-}
-
 func (r HostRunner) printNetworkSummary(req RunRequest, summary *network.Summary) {
 	if summary == nil {
 		return
@@ -373,6 +289,14 @@ func (r HostRunner) printNetworkSummary(req RunRequest, summary *network.Summary
 		stderr = os.Stderr
 	}
 	_ = summary.WriteReport(stderr)
+}
+
+func defaultNetworkServiceStarter(ctx context.Context, cfg config.Config, assets vm.RuntimeAssets) (func(), *network.Summary, error) {
+	stop, summary, err := (keelruntime.NetworkServiceFactory{}).StartUnix(ctx, cfg, assets)
+	if stop == nil {
+		return nil, summary, err
+	}
+	return func() { stop() }, summary, err
 }
 
 func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progress progressReporter) (vm.RuntimeAssets, error) {
@@ -436,13 +360,15 @@ func runtimeFeatureConfig(cfg config.Config) ([]config.FeatureConfig, error) {
 		return nil, nil
 	}
 	features := append([]config.FeatureConfig(nil), cfg.Features...)
-	policyCfg := network.PolicyConfig{Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints, cfg.Network.Audit)}
-	if !policyRequiresMITM(policyCfg) || !cfg.Network.MITM.CA.InstallDocker {
+	if !cfg.Network.MITM.CA.InstallDocker {
 		return features, nil
 	}
-	ca, err := loadMITMCA(cfg)
+	services, err := (keelruntime.NetworkServiceFactory{}).Build(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if services.TCP.MITM == nil || services.TCP.MITM.CA == nil {
+		return features, nil
 	}
 	for i := range features {
 		if features[i].Name != "docker" {
@@ -452,117 +378,10 @@ func runtimeFeatureConfig(cfg config.Config) ([]config.FeatureConfig, error) {
 		for key, value := range features[i].Config {
 			cloned[key] = value
 		}
-		cloned["mitm_ca_pem"] = string(ca.CertPEM)
+		cloned["mitm_ca_pem"] = string(services.TCP.MITM.CA.CertPEM)
 		features[i].Config = cloned
 	}
 	return features, nil
-}
-
-func buildNetworkServices(cfg config.Config) (network.DNSProxy, network.TCPProxy, *network.Summary, error) {
-	tracker := network.NewTracker(60 * time.Second)
-	summary := network.NewSummary()
-	events := network.NewEventLogger(os.Stderr)
-	policyCfg := network.PolicyConfig{
-		Audit:     cfg.Network.Audit,
-		Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints, cfg.Network.Audit),
-		IPRules:   ipRulesFromConfig(cfg.Network.IPRules),
-	}
-	engine := network.NewPolicyEngine(policyCfg, tracker)
-	dnsProxy := network.DNSProxy{
-		Policy:  engine,
-		Summary: summary,
-		Events:  events,
-	}
-	tcpProxy := network.TCPProxy{
-		Policy:  engine,
-		Summary: summary,
-		Events:  events,
-	}
-	if policyRequiresMITM(policyCfg) {
-		ca, err := loadMITMCA(cfg)
-		if err != nil {
-			return network.DNSProxy{}, network.TCPProxy{}, nil, err
-		}
-		tcpProxy.MITM = &network.MITMProxy{
-			Enabled: true,
-			CA:      ca,
-			Summary: summary,
-		}
-	}
-	return dnsProxy, tcpProxy, summary, nil
-}
-
-func endpointRulesFromConfig(items []config.EndpointConfig, audit bool) []network.EndpointRule {
-	rules := make([]network.EndpointRule, 0, len(items))
-	for _, item := range items {
-		rule := network.EndpointRule{
-			Host:            item.Host,
-			Port:            item.Port,
-			RequireSNIMatch: true,
-		}
-		if item.TLS != nil {
-			rule.RequireSNIMatch = item.TLS.RequireSNIMatch
-		}
-		if item.MITM != nil {
-			rule.MITMRequired = item.MITM.Required
-		}
-		if item.HTTP != nil {
-			rule.HTTP = endpointHTTPPolicyFromConfig(item.Host, *item.HTTP, audit)
-		}
-		rules = append(rules, rule)
-	}
-	return rules
-}
-
-func endpointHTTPPolicyFromConfig(host string, item config.EndpointHTTPConfig, audit bool) network.HTTPPolicyConfig {
-	return network.HTTPPolicyConfig{
-		ScopeHost: host,
-		Enabled:   true,
-		Default:   item.Default,
-		Rules:     endpointHTTPRulesFromConfig(item.Rules),
-		Audit:     audit,
-	}
-}
-
-func endpointHTTPRulesFromConfig(items []config.EndpointHTTPRuleConfig) []network.HTTPRule {
-	rules := make([]network.HTTPRule, 0, len(items))
-	for _, item := range items {
-		rules = append(rules, network.HTTPRule{
-			Action:  item.Action,
-			Methods: append([]string(nil), item.Methods...),
-			Paths:   append([]string(nil), item.Paths...),
-		})
-	}
-	return rules
-}
-
-func ipRulesFromConfig(items []config.IPRuleConfig) []network.IPRule {
-	rules := make([]network.IPRule, 0, len(items))
-	for _, item := range items {
-		rules = append(rules, network.IPRule{CIDR: item.CIDR, Port: item.Port})
-	}
-	return rules
-}
-
-func policyRequiresMITM(cfg network.PolicyConfig) bool {
-	for _, endpoint := range cfg.Endpoints {
-		if endpoint.MITMRequired {
-			return true
-		}
-	}
-	return false
-}
-
-func loadMITMCA(cfg config.Config) (*network.CA, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	caDir := filepath.Join(home, ".local", "share", "keel", "ca")
-	return network.LoadOrCreateCA(network.CAOptions{
-		Dir:  caDir,
-		Name: cfg.Network.MITM.CA.Name,
-	})
 }
 
 func (r HostRunner) syncWorkspace(req RunRequest, assets vm.RuntimeAssets) error {
