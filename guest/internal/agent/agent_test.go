@@ -185,6 +185,12 @@ func TestApplyBootManifestSetsCommandEnvProcessAndVolumes(t *testing.T) {
 			UID: 1000,
 			GID: 1001,
 		},
+		Features: []pkgboot.FeatureConfig{{
+			Name: "docker",
+			Config: map[string]any{
+				"storage_driver": "vfs",
+			},
+		}},
 		Volumes: []pkgboot.VolumeMount{{
 			Device:    "/dev/vdd",
 			Target:    "/cache",
@@ -203,6 +209,9 @@ func TestApplyBootManifestSetsCommandEnvProcessAndVolumes(t *testing.T) {
 	}
 	if cfg.Process == nil || cfg.Process.UID != 1000 || cfg.Process.GID != 1001 {
 		t.Fatalf("Process = %#v", cfg.Process)
+	}
+	if len(cfg.Features) != 1 || cfg.Features[0].Name != "docker" {
+		t.Fatalf("Features = %#v", cfg.Features)
 	}
 	if len(cfg.Volumes) != 1 || cfg.Volumes[0].Device != "/dev/vdd" {
 		t.Fatalf("Volumes = %#v", cfg.Volumes)

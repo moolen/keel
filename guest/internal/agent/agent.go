@@ -171,6 +171,15 @@ func applyBootManifest(cfg *bootConfig, manifest pkgboot.Manifest) {
 			SupplementaryGIDs: append([]int(nil), manifest.Process.SupplementaryGIDs...),
 		}
 	}
+	if len(manifest.Features) > 0 {
+		cfg.Features = make([]guestfeatures.ConfiguredFeature, 0, len(manifest.Features))
+		for _, feature := range manifest.Features {
+			cfg.Features = append(cfg.Features, guestfeatures.ConfiguredFeature{
+				Name:   feature.Name,
+				Config: cloneAnyMap(feature.Config),
+			})
+		}
+	}
 	if len(manifest.Volumes) > 0 {
 		cfg.Volumes = make([]volumeMount, 0, len(manifest.Volumes))
 		for _, item := range manifest.Volumes {
@@ -184,6 +193,17 @@ func applyBootManifest(cfg *bootConfig, manifest pkgboot.Manifest) {
 			})
 		}
 	}
+}
+
+func cloneAnyMap(items map[string]any) map[string]any {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(items))
+	for key, value := range items {
+		out[key] = value
+	}
+	return out
 }
 
 func mountCoreFilesystems() error {

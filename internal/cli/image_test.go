@@ -101,3 +101,45 @@ func TestImageListCommandPrintsReferenceAndSize(t *testing.T) {
 		t.Fatalf("output = %q, want size column", output)
 	}
 }
+
+func TestImageRemoveCommandDoesNotRunVM(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	cacheDir := filepath.Join(projectDir, "cache")
+	t.Setenv("HOME", tmpHome)
+
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), []byte("image_cache_dir: "+cacheDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootfsPath := filepath.Join(cacheDir, "ghcr.io", "moolen", "keel-devtools", "main", "rootfs.ext4")
+	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootfsPath, []byte("rootfs-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &stubRunner{}
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Dependencies{Runner: runner})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	cmd.SetArgs([]string{"image", "rm", "ghcr.io/moolen/keel-devtools:main"})
+	t.Chdir(projectDir)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if runner.called {
+		t.Fatal("image rm should not invoke VM runner")
+	}
+	if !strings.Contains(stdout.String(), "removed ghcr.io/moolen/keel-devtools:main") {
+		t.Fatalf("output = %q, want remove confirmation", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Dir(rootfsPath)); !os.IsNotExist(err) {
+		t.Fatalf("cached image directory still exists, stat err=%v", err)
+	}
+}

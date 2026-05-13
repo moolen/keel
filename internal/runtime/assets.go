@@ -448,9 +448,10 @@ func (p AssetPreparer) prepareVolumes(cfg config.Config, runtimeDir string) ([]v
 
 func buildBootManifest(cfg config.Config, volumes []vm.AttachedVolume) pkgboot.Manifest {
 	manifest := pkgboot.Manifest{
-		Command: append([]string(nil), cfg.Command...),
-		CWD:     cfg.Workspace.Target,
-		Env:     cloneStringMap(cfg.RuntimeEnv),
+		Command:  append([]string(nil), cfg.Command...),
+		CWD:      cfg.Workspace.Target,
+		Env:      cloneStringMap(cfg.RuntimeEnv),
+		Features: bootManifestFeatures(cfg.Features),
 	}
 	if manifest.CWD == "" {
 		manifest.CWD = "/workspace"
@@ -474,6 +475,20 @@ func buildBootManifest(cfg config.Config, volumes []vm.AttachedVolume) pkgboot.M
 		})
 	}
 	return manifest
+}
+
+func bootManifestFeatures(features []config.FeatureConfig) []pkgboot.FeatureConfig {
+	if len(features) == 0 {
+		return nil
+	}
+	items := make([]pkgboot.FeatureConfig, 0, len(features))
+	for _, feature := range features {
+		items = append(items, pkgboot.FeatureConfig{
+			Name:   feature.Name,
+			Config: cloneAnyMap(feature.Config),
+		})
+	}
+	return items
 }
 
 func cloneStringMap(items map[string]string) map[string]string {

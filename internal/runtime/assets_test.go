@@ -296,6 +296,12 @@ func TestAssetPreparerPreparesVolumeAndMetadataAssets(t *testing.T) {
 	cfg.Workspace.Mount = sourceDir
 	cfg.Workspace.Target = "/workspace"
 	cfg.RuntimeEnv = map[string]string{"TERM": "xterm-256color"}
+	cfg.Features = []config.FeatureConfig{{
+		Name: "docker",
+		Config: map[string]any{
+			"storage_driver": "vfs",
+		},
+	}}
 	cfg.Volumes = []config.VolumeConfig{{
 		Source:    volumeDir,
 		Target:    "/cache",
@@ -332,6 +338,12 @@ func TestAssetPreparerPreparesVolumeAndMetadataAssets(t *testing.T) {
 	}
 	if got, want := manifest.Volumes[0].Target, "/cache"; got != want {
 		t.Fatalf("manifest volume target = %q, want %q", got, want)
+	}
+	if len(manifest.Features) != 1 || manifest.Features[0].Name != "docker" {
+		t.Fatalf("manifest features = %#v, want docker feature", manifest.Features)
+	}
+	if got := manifest.Features[0].Config["storage_driver"]; got != "vfs" {
+		t.Fatalf("manifest storage_driver = %#v, want vfs", got)
 	}
 }
 

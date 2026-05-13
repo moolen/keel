@@ -2,8 +2,6 @@ package vm
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -78,7 +76,7 @@ func TestBuildHypervisorConfigUsesRuntimeAssets(t *testing.T) {
 	}
 }
 
-func TestBuildHypervisorConfigEncodesFeaturesInKernelArgs(t *testing.T) {
+func TestBuildHypervisorConfigOmitsFeaturesFromKernelArgs(t *testing.T) {
 	cfg := config.Default()
 	cfg.Features = []config.FeatureConfig{{
 		Name: "docker",
@@ -102,12 +100,8 @@ func TestBuildHypervisorConfigEncodesFeaturesInKernelArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildHypervisorConfig() error = %v", err)
 	}
-	features := decodeKernelFeatures(t, hvCfg.KernelArgs)
-	if len(features) != 1 || features[0].Name != "docker" {
-		t.Fatalf("decoded features = %#v", features)
-	}
-	if got := features[0].Config["storage_driver"]; got != "vfs" {
-		t.Fatalf("decoded storage_driver = %#v, want vfs", got)
+	if strings.Contains(hvCfg.KernelArgs, "keel.features=") {
+		t.Fatalf("KernelArgs = %q, want features to travel via boot manifest", hvCfg.KernelArgs)
 	}
 }
 
@@ -337,25 +331,4 @@ func (stubVM) VSockConnect(uint32) (net.Conn, error) {
 	server, client := net.Pipe()
 	go server.Close()
 	return client, nil
-}
-
-func decodeKernelFeatures(t *testing.T, kernelArgs string) []config.FeatureConfig {
-	t.Helper()
-	for _, field := range strings.Fields(kernelArgs) {
-		if !strings.HasPrefix(field, "keel.features=") {
-			continue
-		}
-		encoded := strings.TrimPrefix(field, "keel.features=")
-		data, err := base64.RawURLEncoding.DecodeString(encoded)
-		if err != nil {
-			t.Fatalf("DecodeString() error = %v", err)
-		}
-		var features []config.FeatureConfig
-		if err := json.Unmarshal(data, &features); err != nil {
-			t.Fatalf("Unmarshal() error = %v", err)
-		}
-		return features
-	}
-	t.Fatalf("keel.features not found in %q", kernelArgs)
-	return nil
 }

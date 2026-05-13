@@ -2,8 +2,6 @@ package vm
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -250,22 +248,8 @@ func (m *Machine) kernelArgs() string {
 		"rw",
 		"init=/usr/local/bin/keel-agent",
 	}
-	if len(m.Config.Features) > 0 {
-		encoded, err := encodeKernelFeatures(m.Config.Features)
-		if err == nil && encoded != "" {
-			args = append(args, "keel.features="+encoded)
-		}
-	}
 	args = append(args, "keel.meta="+GuestBlockDevicePath(1))
 	return strings.Join(args, " ")
-}
-
-func encodeKernelFeatures(features []config.FeatureConfig) (string, error) {
-	data, err := json.Marshal(features)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(data), nil
 }
 
 func GuestBlockDevicePath(extraIndex int) string {
