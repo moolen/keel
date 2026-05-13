@@ -8,30 +8,42 @@ import (
 	"time"
 )
 
-type RuleSet struct {
-	Allowed []string
-	Denied  []string
-}
-
-type CIDRRuleSet struct {
-	Allowed []string
-	Denied  []string
-}
-
 type PolicyConfig struct {
-	Audit       bool
-	DNS         RuleSet
-	TCP         CIDRRuleSet
-	TLS         RuleSet
-	HTTP        HTTPPolicyConfig
-	DenyIfNoSNI bool
+	Audit     bool
+	Endpoints []EndpointRule
+	IPRules   []IPRule
+}
+
+type EndpointRule struct {
+	Host            string
+	Port            int
+	RequireSNIMatch bool
+	MITMRequired    bool
+	HTTP            HTTPPolicyConfig
+}
+
+type IPRule struct {
+	CIDR string
+	Port int
+}
+
+type DNSAuthorization struct {
+	Host            string
+	Port            int
+	RequireSNIMatch bool
+	MITMRequired    bool
+	HTTP            HTTPPolicyConfig
+	Rule            string
 }
 
 type Decision struct {
-	Allowed   bool
-	WouldDeny bool
-	Reason    string
-	Rule      string
+	Allowed      bool
+	WouldDeny    bool
+	Reason       string
+	Rule         string
+	EndpointHost string
+	MITMRequired bool
+	HTTP         HTTPPolicyConfig
 }
 
 type PolicyEngine struct {
@@ -43,65 +55,94 @@ func NewPolicyEngine(cfg PolicyConfig, tracker *Tracker) *PolicyEngine {
 	return &PolicyEngine{config: cfg, tracker: tracker}
 }
 
-func (e *PolicyEngine) EvaluateDNS(domain string) Decision {
+func (e *PolicyEngine) EvaluateDNS(domain string) (Decision, []DNSAuthorization) {
 	domain = normalizeName(domain)
-	if rule, ok := matchAny(domain, e.config.DNS.Denied); ok {
-		return e.applyAudit(Decision{Reason: "dns denied", Rule: rule})
+	var authorizations []DNSAuthorization
+	for _, endpoint := range e.config.Endpoints {
+		host := normalizeName(endpoint.Host)
+		if !matchName(domain, host) {
+			continue
+		}
+		rule := endpointRuleName(host, endpoint.Port)
+		authorizations = append(authorizations, DNSAuthorization{
+			Host:            domain,
+			Port:            endpoint.Port,
+			RequireSNIMatch: endpoint.RequireSNIMatch,
+			MITMRequired:    endpoint.MITMRequired,
+			HTTP:            endpoint.HTTP,
+			Rule:            rule,
+		})
 	}
-	if len(e.config.DNS.Allowed) == 0 {
-		return Decision{Allowed: true, Reason: "dns default allow", Rule: "default"}
+	if len(authorizations) == 0 {
+		return e.applyAudit(Decision{Reason: "host not covered by endpoint", Rule: "default"}), nil
 	}
-	if rule, ok := matchAny(domain, e.config.DNS.Allowed); ok {
-		return Decision{Allowed: true, Reason: "dns allowed", Rule: rule}
+	return Decision{
+		Allowed:      true,
+		Reason:       "host covered by endpoint",
+		Rule:         authorizations[0].Rule,
+		EndpointHost: domain,
+		MITMRequired: authorizations[0].MITMRequired,
+		HTTP:         authorizations[0].HTTP,
+	}, authorizations
+}
+
+func (e *PolicyEngine) ObserveDNS(domain string, ips []net.IP, ttl time.Duration, now time.Time, auths []DNSAuthorization) {
+	if e.tracker == nil {
+		return
 	}
-	return e.applyAudit(Decision{Reason: "dns not allowlisted", Rule: "default"})
+	for _, ip := range ips {
+		for _, auth := range auths {
+			e.tracker.ObserveAuthorization(ip, ttl, now, auth)
+		}
+	}
 }
 
 func (e *PolicyEngine) EvaluateTCP(ip net.IP, port int, sni string, isTLS bool, now time.Time) Decision {
 	if ip == nil {
 		return e.applyAudit(Decision{Reason: "missing destination ip", Rule: "default"})
 	}
-	for _, rule := range e.config.TCP.Denied {
-		if cidrContains(rule, ip) {
-			return e.applyAudit(Decision{Reason: "tcp denied by cidr", Rule: rule})
-		}
-	}
 
-	var domains []string
 	if e.tracker != nil {
-		domains = e.tracker.Domains(ip, now)
-	}
-
-	if len(domains) > 0 {
-		if isTLS {
-			if e.config.DenyIfNoSNI && sni == "" {
-				return e.applyAudit(Decision{Reason: "tls sni required", Rule: "deny_if_no_sni"})
+		auths := e.tracker.Authorizations(ip, port, now)
+		if len(auths) > 0 {
+			if decision, ok := evaluateEndpointAuthorizations(auths, sni, isTLS); ok {
+				return decision
 			}
-			if sni != "" {
-				if rule, ok := matchAny(sni, e.config.TLS.Denied); ok {
-					return e.applyAudit(Decision{Reason: "tls denied by sni", Rule: rule})
-				}
-				if len(e.config.TLS.Allowed) > 0 {
-					if rule, ok := matchAny(sni, e.config.TLS.Allowed); ok {
-						if !containsName(domains, sni) {
-							return e.applyAudit(Decision{Reason: "sni does not match resolved domain", Rule: rule})
-						}
-						return Decision{Allowed: true, Reason: "tcp allowed via dns correlation", Rule: fmt.Sprintf("dns:%s", sni)}
-					}
-					return e.applyAudit(Decision{Reason: "tls sni not allowlisted", Rule: "default"})
-				}
-			}
-		}
-		return Decision{Allowed: true, Reason: "tcp allowed via dns correlation", Rule: fmt.Sprintf("dns:%s", domains[0])}
-	}
-
-	for _, rule := range e.config.TCP.Allowed {
-		if cidrContains(rule, ip) {
-			return Decision{Allowed: true, Reason: "tcp allowed by cidr", Rule: rule}
+			return e.applyAudit(Decision{Reason: "sni does not match endpoint", Rule: auths[0].Rule, EndpointHost: auths[0].Host})
 		}
 	}
 
-	return e.applyAudit(Decision{Reason: "tcp destination not correlated", Rule: "default"})
+	for _, rule := range e.config.IPRules {
+		if rule.Port == port && cidrContains(rule.CIDR, ip) {
+			return Decision{
+				Allowed: true,
+				Reason:  "tcp allowed by direct ip rule",
+				Rule:    directIPRuleName(rule.CIDR, rule.Port),
+			}
+		}
+	}
+
+	return e.applyAudit(Decision{Reason: "tcp destination not authorized", Rule: "default"})
+}
+
+func evaluateEndpointAuthorizations(auths []DNSAuthorization, sni string, isTLS bool) (Decision, bool) {
+	normalizedSNI := normalizeName(sni)
+	for _, auth := range auths {
+		if isTLS && auth.RequireSNIMatch {
+			if normalizedSNI == "" || normalizedSNI != normalizeName(auth.Host) {
+				continue
+			}
+		}
+		return Decision{
+			Allowed:      true,
+			Reason:       "tcp allowed by endpoint authorization",
+			Rule:         auth.Rule,
+			EndpointHost: normalizeName(auth.Host),
+			MITMRequired: auth.MITMRequired,
+			HTTP:         auth.HTTP,
+		}, true
+	}
+	return Decision{}, false
 }
 
 func (e *PolicyEngine) applyAudit(decision Decision) Decision {
@@ -117,28 +158,31 @@ func matchAny(name string, patterns []string) (string, bool) {
 	name = normalizeName(name)
 	for _, pattern := range patterns {
 		pattern = normalizeName(pattern)
-		ok, err := path.Match(pattern, name)
-		if err == nil && ok {
+		if matchName(name, pattern) {
 			return pattern, true
 		}
 	}
 	return "", false
 }
 
-func normalizeName(name string) string {
-	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+func matchName(name, pattern string) bool {
+	ok, err := path.Match(pattern, name)
+	return err == nil && ok
 }
 
-func containsName(domains []string, sni string) bool {
-	for _, domain := range domains {
-		if normalizeName(domain) == normalizeName(sni) {
-			return true
-		}
-	}
-	return false
+func normalizeName(name string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 }
 
 func cidrContains(cidr string, ip net.IP) bool {
 	_, network, err := net.ParseCIDR(cidr)
 	return err == nil && network.Contains(ip)
+}
+
+func endpointRuleName(host string, port int) string {
+	return fmt.Sprintf("endpoint:%s:%d", normalizeName(host), port)
+}
+
+func directIPRuleName(cidr string, port int) string {
+	return fmt.Sprintf("ip:%s:%d", cidr, port)
 }

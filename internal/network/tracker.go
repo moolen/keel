@@ -6,41 +6,44 @@ import (
 	"time"
 )
 
-type trackedDomain struct {
-	domain    string
-	expiresAt time.Time
+type trackedAuthorization struct {
+	authorization DNSAuthorization
+	expiresAt     time.Time
 }
 
 type Tracker struct {
 	minTTL time.Duration
 	mu     sync.RWMutex
-	byIP   map[string][]trackedDomain
+	byIP   map[string][]trackedAuthorization
 }
 
 func NewTracker(minTTL time.Duration) *Tracker {
 	return &Tracker{
 		minTTL: minTTL,
-		byIP:   map[string][]trackedDomain{},
+		byIP:   map[string][]trackedAuthorization{},
 	}
 }
 
-func (t *Tracker) Observe(domain string, ip net.IP, ttl time.Duration, now time.Time) {
+func (t *Tracker) ObserveAuthorization(ip net.IP, ttl time.Duration, now time.Time, authorization DNSAuthorization) {
 	if ip == nil {
 		return
 	}
 	if ttl < t.minTTL {
 		ttl = t.minTTL
 	}
+	authorization.Host = normalizeName(authorization.Host)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
 	key := ip.String()
-	t.byIP[key] = append(t.byIP[key], trackedDomain{
-		domain:    normalizeName(domain),
-		expiresAt: now.Add(ttl),
+	t.byIP[key] = append(t.byIP[key], trackedAuthorization{
+		authorization: authorization,
+		expiresAt:     now.Add(ttl),
 	})
 }
 
-func (t *Tracker) Domains(ip net.IP, now time.Time) []string {
+func (t *Tracker) Authorizations(ip net.IP, port int, now time.Time) []DNSAuthorization {
 	if ip == nil {
 		return nil
 	}
@@ -51,18 +54,28 @@ func (t *Tracker) Domains(ip net.IP, now time.Time) []string {
 
 	entries := t.byIP[key]
 	filtered := entries[:0]
-	domains := make([]string, 0, len(entries))
+	authorizations := make([]DNSAuthorization, 0, len(entries))
 	for _, entry := range entries {
 		if now.After(entry.expiresAt) {
 			continue
 		}
 		filtered = append(filtered, entry)
-		domains = append(domains, entry.domain)
+		if entry.authorization.Port == port {
+			authorizations = append(authorizations, entry.authorization)
+		}
 	}
 	if len(filtered) == 0 {
 		delete(t.byIP, key)
 	} else {
 		t.byIP[key] = filtered
 	}
-	return domains
+	return authorizations
+}
+
+func (t *Tracker) Host(ip net.IP, port int, now time.Time) string {
+	authorizations := t.Authorizations(ip, port, now)
+	if len(authorizations) == 0 {
+		return ""
+	}
+	return authorizations[0].Host
 }
