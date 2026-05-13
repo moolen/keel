@@ -15,20 +15,16 @@ workspace:
 network:
   mode: vsock
   audit: true
-  deny_if_no_sni: false
-  dns:
-    allowed:
-      - "*.github.com"
-      - "archive.ubuntu.com"
-      - "security.ubuntu.com"
-  tcp:
-    allowed_cidrs: []
-    denied_cidrs: []
-  tls:
-    allowed_sni:
-      - "*.github.com"
-      - "archive.ubuntu.com"
-      - "security.ubuntu.com"
+  endpoints:
+    - host: "*.github.com"
+      port: 443
+      tls:
+        require_sni_match: true
+    - host: archive.ubuntu.com
+      port: 80
+    - host: security.ubuntu.com
+      port: 80
+  ip_rules: []
 
 features:
   - name: docker

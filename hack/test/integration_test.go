@@ -149,16 +149,13 @@ func (s *e2eSuite) testFilesystemOperations(t *testing.T) {
 	project := s.newProject(t)
 	project.writeConfig(t, "ubuntu:24.04", yamlBlock(
 		"network:",
-		"  dns:",
-		"    allowed:",
-		"      - archive.ubuntu.com",
-		"      - security.ubuntu.com",
-		"      - '*.ubuntu.com'",
-		"  tls:",
-		"    allowed_sni:",
-		"      - archive.ubuntu.com",
-		"      - security.ubuntu.com",
-		"      - '*.ubuntu.com'",
+		"  endpoints:",
+		"    - host: archive.ubuntu.com",
+		"      port: 80",
+		"    - host: security.ubuntu.com",
+		"      port: 80",
+		"    - host: '*.ubuntu.com'",
+		"      port: 80",
 	))
 
 	result := project.run(t, "", bash(`
@@ -201,20 +198,21 @@ func (s *e2eSuite) testDNSPolicy(t *testing.T) {
 		project := s.newProject(t)
 		project.writeConfig(t, "ubuntu:24.04", yamlBlock(
 			"network:",
-			"  dns:",
-			"    allowed:",
-			"      - example.com",
-			"      - '*.github.com'",
-			"      - '*.ubuntu.com'",
-			"      - archive.ubuntu.com",
-			"      - security.ubuntu.com",
-			"    denied:",
-			"      - gist.github.com",
-			"  tls:",
-			"    allowed_sni:",
-			"      - '*.ubuntu.com'",
-			"      - archive.ubuntu.com",
-			"      - security.ubuntu.com",
+			"  endpoints:",
+			"    - host: example.com",
+			"      port: 443",
+			"      tls:",
+			"        require_sni_match: true",
+			"    - host: api.github.com",
+			"      port: 443",
+			"      tls:",
+			"        require_sni_match: true",
+			"    - host: '*.ubuntu.com'",
+			"      port: 80",
+			"    - host: archive.ubuntu.com",
+			"      port: 80",
+			"    - host: security.ubuntu.com",
+			"      port: 80",
 		))
 
 		result := project.run(t, "", bash(`
@@ -246,14 +244,17 @@ dig +short security.ubuntu.com
 		project := s.newProject(t)
 		project.writeConfig(t, "ubuntu:24.04", yamlBlock(
 			"network:",
-			"  dns:",
-			"    allowed:",
-			"      - '*.github.com'",
-			"      - archive.ubuntu.com",
-			"      - security.ubuntu.com",
-			"      - '*.ubuntu.com'",
-			"    denied:",
-			"      - gist.github.com",
+			"  endpoints:",
+			"    - host: api.github.com",
+			"      port: 443",
+			"      tls:",
+			"        require_sni_match: true",
+			"    - host: archive.ubuntu.com",
+			"      port: 80",
+			"    - host: security.ubuntu.com",
+			"      port: 80",
+			"    - host: '*.ubuntu.com'",
+			"      port: 80",
 		))
 		result := project.run(t, "", bash(`
 set -eu
@@ -275,23 +276,16 @@ func (s *e2eSuite) testTCPTLSPolicy(t *testing.T) {
 		project := s.newProject(t)
 		project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 			"network:",
-			"  deny_if_no_sni: true",
-			"  dns:",
-			"    allowed:",
-			"      - httpbin.org",
-			"      - neverssl.com",
-			"      - example.com",
-			"  tls:",
-			"    allowed_sni:",
-			"      - httpbin.org",
-			"      - neverssl.com",
-			"    denied_sni:",
-			"      - example.com",
-			"  tcp:",
-			"    allowed_cidrs:",
-			"      - 172.22.0.0/16",
-			"    denied_cidrs:",
-			"      - 10.0.0.0/8",
+			"  endpoints:",
+			"    - host: httpbin.org",
+			"      port: 443",
+			"      tls:",
+			"        require_sni_match: true",
+			"    - host: neverssl.com",
+			"      port: 80",
+			"  ip_rules:",
+			"    - cidr: 172.22.0.0/16",
+			"      port: 80",
 		))
 
 		allowedHTTPS := project.run(t, "", sh("curl -fsS https://httpbin.org/get")...)
@@ -301,7 +295,7 @@ func (s *e2eSuite) testTCPTLSPolicy(t *testing.T) {
 
 		deniedSNI := project.run(t, "", sh("curl -fsS https://example.com")...)
 		deniedSNI.requireFailure(t)
-		requireContainsAll(t, deniedSNI.Stderr, "tcp  example.com:443 policy=denied")
+		requireContainsAll(t, deniedSNI.Stderr, "dns  example.com:53 policy=denied")
 
 		serverPort := startLocalHTTPServer(t, "NeverSSL from host\n")
 		allowedHTTP := project.run(t, "", sh(fmt.Sprintf(`
@@ -321,19 +315,21 @@ curl -fsS "http://$gw:%d"
 		project := s.newProject(t)
 		project.writeConfig(t, "ubuntu:24.04", yamlBlock(
 			"network:",
-			"  deny_if_no_sni: true",
-			"  dns:",
-			"    allowed:",
-			"      - httpbin.org",
-			"      - archive.ubuntu.com",
-			"      - security.ubuntu.com",
-			"      - '*.ubuntu.com'",
-			"  tls:",
-			"    allowed_sni:",
-			"      - httpbin.org",
-			"      - archive.ubuntu.com",
-			"      - security.ubuntu.com",
-			"      - '*.ubuntu.com'",
+			"  endpoints:",
+			"    - host: httpbin.org",
+			"      port: 443",
+			"      tls:",
+			"        require_sni_match: true",
+			"    - host: httpbin.org",
+			"      port: 8443",
+			"      tls:",
+			"        require_sni_match: true",
+			"    - host: archive.ubuntu.com",
+			"      port: 80",
+			"    - host: security.ubuntu.com",
+			"      port: 80",
+			"    - host: '*.ubuntu.com'",
+			"      port: 80",
 		))
 		denied := project.run(t, "", bash(`
 set -eu
@@ -345,7 +341,7 @@ cat /tmp/out
 		denied.requireFailure(t)
 		requireContainsAll(t, denied.Stderr, "tcp  httpbin.org:443 policy=denied")
 
-		// Verify deny_if_no_sni is enforced on non-standard TLS ports too.
+		// Verify required SNI matching is enforced on non-standard TLS ports too.
 		deniedNonStd := project.run(t, "", bash(`
 set -eu
 apt-get update >/dev/null
@@ -358,13 +354,17 @@ cat /tmp/out_8443
 
 		project.writeConfig(t, "ubuntu:24.04", yamlBlock(
 			"network:",
-			"  deny_if_no_sni: false",
-			"  dns:",
-			"    allowed:",
-			"      - httpbin.org",
-			"      - archive.ubuntu.com",
-			"      - security.ubuntu.com",
-			"      - '*.ubuntu.com'",
+			"  endpoints:",
+			"    - host: httpbin.org",
+			"      port: 443",
+			"      tls:",
+			"        require_sni_match: false",
+			"    - host: archive.ubuntu.com",
+			"      port: 80",
+			"    - host: security.ubuntu.com",
+			"      port: 80",
+			"    - host: '*.ubuntu.com'",
+			"      port: 80",
 		))
 		allowed := project.run(t, "", bash(`
 set -eu
@@ -379,29 +379,40 @@ cat /tmp/out
 	})
 
 	t.Run("Non-Standard Port TLS SNI", func(t *testing.T) {
-		// Verify that TLS SNI policy (denied_sni, allowed_sni, deny_if_no_sni)
-		// is enforced on non-standard TLS ports, not only port 443.
+		// Verify that endpoint TLS SNI matching is enforced on non-standard
+		// TLS ports, not only port 443.
 		project := s.newProject(t)
 		project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 			"network:",
-			"  dns:",
-			"    allowed:",
-			"      - httpbin.org",
-			"  tls:",
-			"    denied_sni:",
-			"      - httpbin.org",
+			"  endpoints:",
+			"    - host: httpbin.org",
+			"      port: 443",
+			"      tls:",
+			"        require_sni_match: true",
+			"    - host: httpbin.org",
+			"      port: 8443",
+			"      tls:",
+			"        require_sni_match: true",
 		))
 
 		// Port 443: denied by SNI (baseline).
-		denied443 := project.run(t, "", sh(`curl --connect-timeout 5 https://httpbin.org/get || echo SNI_DENIED_443`)...)
+		denied443 := project.run(t, "", sh(`
+set -eu
+real_ip=$(getent ahostsv4 httpbin.org | awk '{print $1; exit}')
+curl --connect-timeout 5 --resolve "other.httpbin.org:443:${real_ip}" https://other.httpbin.org/get || echo SNI_DENIED_443
+`)...)
 		denied443.requireSuccess(t)
 		requireContainsAll(t, denied443.Stdout, "SNI_DENIED_443")
 		requireContainsAll(t, denied443.Stderr, "tcp  httpbin.org:443 policy=denied")
 
-		// Port 8443: must also be denied by SNI, not allowed via DNS correlation.
+		// Port 8443: must also be denied by endpoint policy, not allowed via DNS correlation.
 		// Before the fix, non-standard ports bypassed SNI checks and would show
 		// "policy=allowed" (allowed via dns correlation) instead of "policy=denied".
-		denied8443 := project.run(t, "", sh(`curl --connect-timeout 5 https://httpbin.org:8443/ || echo SNI_DENIED_8443`)...)
+		denied8443 := project.run(t, "", sh(`
+set -eu
+real_ip=$(getent ahostsv4 httpbin.org | awk '{print $1; exit}')
+curl --connect-timeout 5 --resolve "other.httpbin.org:8443:${real_ip}" https://other.httpbin.org:8443/ || echo SNI_DENIED_8443
+`)...)
 		denied8443.requireSuccess(t)
 		requireContainsAll(t, denied8443.Stdout, "SNI_DENIED_8443")
 		requireContainsAll(t, denied8443.Stderr,
@@ -441,16 +452,17 @@ func (s *e2eSuite) testSecurityAndEvasion(t *testing.T) {
 	project := s.newProject(t)
 	project.writeConfig(t, "ubuntu:24.04", yamlBlock(
 		"network:",
-		"  deny_if_no_sni: true",
-		"  dns:",
-		"    allowed:",
-		"      - httpbin.org",
-		"      - archive.ubuntu.com",
-		"      - security.ubuntu.com",
-		"      - '*.ubuntu.com'",
-		"  tls:",
-		"    allowed_sni:",
-		"      - httpbin.org",
+		"  endpoints:",
+		"    - host: httpbin.org",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: archive.ubuntu.com",
+		"      port: 80",
+		"    - host: security.ubuntu.com",
+		"      port: 80",
+		"    - host: '*.ubuntu.com'",
+		"      port: 80",
 	))
 
 	result := project.run(t, "", bash(`
@@ -494,35 +506,27 @@ func (s *e2eSuite) testMITMHTTPPolicy(t *testing.T) {
 	project := s.newProject(t)
 	project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 		"network:",
+		"  endpoints:",
+		"    - host: httpbin.org",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"      mitm:",
+		"        required: true",
+		"      http:",
+		"        default: deny",
+		"        rules:",
+		"          - action: allow",
+		"            methods: ['GET']",
+		"            paths: ['/get', '/status/*']",
+		"          - action: deny",
+		"            methods: ['POST', 'PUT', 'DELETE']",
+		"            paths: ['/*']",
 		"  mitm:",
-		"    enabled: true",
-		"    mode: optional",
-		"    on_untrusted_cert: deny",
-		"    log_requests: true",
 		"    ca:",
 		"      name: keel-test-ca",
 		"      install_system: true",
 		"      install_docker: false",
-		"    bypass:",
-		"      hosts: []",
-		"      sni: []",
-		"  dns:",
-		"    allowed:",
-		"      - httpbin.org",
-		"  tls:",
-		"    allowed_sni:",
-		"      - httpbin.org",
-		"  http:",
-		"    default: deny",
-		"    rules:",
-		"      - action: allow",
-		"        host: httpbin.org",
-		"        methods: ['GET']",
-		"        paths: ['/get', '/status/*']",
-		"      - action: deny",
-		"        host: httpbin.org",
-		"        methods: ['POST', 'PUT', 'DELETE']",
-		"        paths: ['/*']",
 	))
 
 	allowedGet := project.run(t, "", sh("curl -fsS https://httpbin.org/get")...)
@@ -548,22 +552,15 @@ func (s *e2eSuite) testMITMHTTPPolicy(t *testing.T) {
 
 	project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 		"network:",
+		"  endpoints:",
+		"    - host: httpbin.org",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
 		"  mitm:",
-		"    enabled: true",
-		"    mode: optional",
-		"    on_untrusted_cert: deny",
 		"    ca:",
 		"      name: keel-test-ca",
 		"      install_system: true",
-		"    bypass:",
-		"      hosts:",
-		"        - httpbin.org",
-		"  dns:",
-		"    allowed:",
-		"      - httpbin.org",
-		"  tls:",
-		"    allowed_sni:",
-		"      - httpbin.org",
 	))
 	bypass := project.run(t, "", sh(`curl -fsS -X POST https://httpbin.org/post -d "test=123"`)...)
 	bypass.requireSuccess(t)
@@ -575,12 +572,11 @@ func (s *e2eSuite) testAuditMode(t *testing.T) {
 	project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 		"network:",
 		"  audit: true",
-		"  dns:",
-		"    denied:",
-		"      - api.github.com",
-		"  tls:",
-		"    denied_sni:",
-		"      - api.github.com",
+		"  endpoints:",
+		"    - host: httpbin.org",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
 	))
 
 	result := project.run(t, "", sh("curl -fsS https://api.github.com/repos/moolen/keel >/dev/null && echo audit-ok")...)
@@ -616,32 +612,53 @@ RUN sh -eux -c 'test -n "${HTTP_PROXY:-}${http_proxy:-}" && apk update >/dev/nul
 		"resources:",
 		"  root_disk_mb: 4096",
 		"network:",
-		"  dns:",
-		"    allowed:",
-		"      - auth.docker.io",
-		"      - registry-1.docker.io",
-		"      - production.cloudflare.docker.com",
-		"      - '*.r2.cloudflarestorage.com'",
-		"      - '*.docker.io'",
-		"      - '*.docker.com'",
-		"      - '*.cloudfront.net'",
-		"      - dl-cdn.alpinelinux.org",
-		"      - '*.alpinelinux.org'",
-		"      - httpbin.org",
-		"      - registry.npmjs.org",
-		"  tls:",
-		"    allowed_sni:",
-		"      - auth.docker.io",
-		"      - registry-1.docker.io",
-		"      - production.cloudflare.docker.com",
-		"      - '*.r2.cloudflarestorage.com'",
-		"      - '*.docker.io'",
-		"      - '*.docker.com'",
-		"      - '*.cloudfront.net'",
-		"      - dl-cdn.alpinelinux.org",
-		"      - '*.alpinelinux.org'",
-		"      - httpbin.org",
-		"      - registry.npmjs.org",
+		"  endpoints:",
+		"    - host: auth.docker.io",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: registry-1.docker.io",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: production.cloudflare.docker.com",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: '*.r2.cloudflarestorage.com'",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: '*.docker.io'",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: '*.docker.com'",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: '*.cloudfront.net'",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: dl-cdn.alpinelinux.org",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: dl-cdn.alpinelinux.org",
+		"      port: 80",
+		"    - host: '*.alpinelinux.org'",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: httpbin.org",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: registry.npmjs.org",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
 		"features:",
 		"  - name: docker",
 		"    config:",
@@ -791,16 +808,13 @@ func (s *e2eSuite) testAgentWorkflow(t *testing.T) {
 		"  sync_confirm: false",
 		"  sync_deletes: false",
 		"network:",
-		"  dns:",
-		"    allowed:",
-		"      - archive.ubuntu.com",
-		"      - security.ubuntu.com",
-		"      - '*.ubuntu.com'",
-		"  tls:",
-		"    allowed_sni:",
-		"      - archive.ubuntu.com",
-		"      - security.ubuntu.com",
-		"      - '*.ubuntu.com'",
+		"  endpoints:",
+		"    - host: archive.ubuntu.com",
+		"      port: 80",
+		"    - host: security.ubuntu.com",
+		"      port: 80",
+		"    - host: '*.ubuntu.com'",
+		"      port: 80",
 	))
 
 	result := project.run(t, "", bash(`
@@ -852,14 +866,15 @@ func (s *e2eSuite) testParallelNetworkStress(t *testing.T) {
 	project := s.newProject(t)
 	project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 		"network:",
-		"  dns:",
-		"    allowed:",
-		"      - api.github.com",
-		"      - httpbin.org",
-		"  tls:",
-		"    allowed_sni:",
-		"      - api.github.com",
-		"      - httpbin.org",
+		"  endpoints:",
+		"    - host: api.github.com",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: httpbin.org",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
 	))
 
 	result := project.run(t, "", sh(`
@@ -881,12 +896,11 @@ func (s *e2eSuite) testShutdownSummary(t *testing.T) {
 		project := s.newProject(t)
 		project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 			"network:",
-			"  dns:",
-			"    allowed:",
-			"      - httpbin.org",
-			"  tls:",
-			"    allowed_sni:",
-			"      - httpbin.org",
+			"  endpoints:",
+			"    - host: httpbin.org",
+			"      port: 443",
+			"      tls:",
+			"        require_sni_match: true",
 		))
 		result := project.run(t, "", sh(`
 curl -fsS https://httpbin.org/get >/dev/null
@@ -906,24 +920,23 @@ echo no-network-check
 		project := s.newProject(t)
 		project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 			"network:",
+			"  endpoints:",
+			"    - host: httpbin.org",
+			"      port: 443",
+			"      tls:",
+			"        require_sni_match: true",
+			"      mitm:",
+			"        required: true",
+			"      http:",
+			"        default: deny",
+			"        rules:",
+			"          - action: allow",
+			"            methods: ['GET']",
+			"            paths: ['/get']",
 			"  mitm:",
-			"    enabled: true",
 			"    ca:",
 			"      name: keel-summary-ca",
 			"      install_system: true",
-			"  dns:",
-			"    allowed:",
-			"      - httpbin.org",
-			"  tls:",
-			"    allowed_sni:",
-			"      - httpbin.org",
-			"  http:",
-			"    default: deny",
-			"    rules:",
-			"      - action: allow",
-			"        host: httpbin.org",
-			"        methods: ['GET']",
-			"        paths: ['/get']",
 		))
 		httpResult := project.run(t, "", sh("curl -fsS https://httpbin.org/get >/dev/null")...)
 		httpResult.requireSuccess(t)
