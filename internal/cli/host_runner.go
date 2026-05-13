@@ -734,7 +734,7 @@ func ensureRuntimeRootfsSize(imagePath string, minSizeMB int) error {
 }
 
 func guestTrustAssetsForConfig(cfg config.Config) (image.GuestTrustAssets, error) {
-	policyCfg := network.PolicyConfig{Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints)}
+	policyCfg := network.PolicyConfig{Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints, cfg.Network.Audit)}
 	if !policyRequiresMITM(policyCfg) || !cfg.Network.MITM.CA.InstallSystem {
 		return image.GuestTrustAssets{}, nil
 	}
@@ -772,7 +772,7 @@ func runtimeFeatureConfig(cfg config.Config) ([]config.FeatureConfig, error) {
 		return nil, nil
 	}
 	features := append([]config.FeatureConfig(nil), cfg.Features...)
-	policyCfg := network.PolicyConfig{Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints)}
+	policyCfg := network.PolicyConfig{Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints, cfg.Network.Audit)}
 	if !policyRequiresMITM(policyCfg) || !cfg.Network.MITM.CA.InstallDocker {
 		return features, nil
 	}
@@ -800,7 +800,7 @@ func buildNetworkServices(cfg config.Config) (network.DNSProxy, network.TCPProxy
 	events := network.NewEventLogger(os.Stderr)
 	policyCfg := network.PolicyConfig{
 		Audit:     cfg.Network.Audit,
-		Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints),
+		Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints, cfg.Network.Audit),
 		IPRules:   ipRulesFromConfig(cfg.Network.IPRules),
 	}
 	engine := network.NewPolicyEngine(policyCfg, tracker)
@@ -828,7 +828,7 @@ func buildNetworkServices(cfg config.Config) (network.DNSProxy, network.TCPProxy
 	return dnsProxy, tcpProxy, summary, nil
 }
 
-func endpointRulesFromConfig(items []config.EndpointConfig) []network.EndpointRule {
+func endpointRulesFromConfig(items []config.EndpointConfig, audit bool) []network.EndpointRule {
 	rules := make([]network.EndpointRule, 0, len(items))
 	for _, item := range items {
 		rule := network.EndpointRule{
@@ -843,17 +843,18 @@ func endpointRulesFromConfig(items []config.EndpointConfig) []network.EndpointRu
 			rule.MITMRequired = item.MITM.Required
 		}
 		if item.HTTP != nil {
-			rule.HTTP = endpointHTTPPolicyFromConfig(*item.HTTP)
+			rule.HTTP = endpointHTTPPolicyFromConfig(*item.HTTP, audit)
 		}
 		rules = append(rules, rule)
 	}
 	return rules
 }
 
-func endpointHTTPPolicyFromConfig(item config.EndpointHTTPConfig) network.HTTPPolicyConfig {
+func endpointHTTPPolicyFromConfig(item config.EndpointHTTPConfig, audit bool) network.HTTPPolicyConfig {
 	return network.HTTPPolicyConfig{
 		Default: item.Default,
 		Rules:   endpointHTTPRulesFromConfig(item.Rules),
+		Audit:   audit,
 	}
 }
 

@@ -1037,6 +1037,9 @@ func TestBuildNetworkServicesEnablesAuditMode(t *testing.T) {
 		Host: "api.github.com",
 		Port: 443,
 		MITM: &config.EndpointMITMConfig{Required: true},
+		HTTP: &config.EndpointHTTPConfig{
+			Default: "deny",
+		},
 	}}
 
 	dnsProxy, tcpProxy, _, err := buildNetworkServices(cfg)
@@ -1050,6 +1053,18 @@ func TestBuildNetworkServicesEnablesAuditMode(t *testing.T) {
 	}
 	if tcpProxy.MITM == nil {
 		t.Fatal("expected MITM proxy")
+	}
+	_, auths := dnsProxy.Policy.EvaluateDNS("api.github.com")
+	if len(auths) != 1 {
+		t.Fatalf("endpoint auths = %+v, want one auth", auths)
+	}
+	httpDecision := network.NewHTTPPolicy(auths[0].HTTP).Evaluate(network.HTTPRequest{
+		Host:   "api.github.com",
+		Method: "GET",
+		Path:   "/private",
+	})
+	if !httpDecision.Allowed || !httpDecision.WouldDeny {
+		t.Fatalf("http audit decision = %+v, want allowed+would_deny", httpDecision)
 	}
 }
 
