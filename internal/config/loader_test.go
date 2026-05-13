@@ -309,6 +309,21 @@ func TestLoadRejectsInvalidNetworkConfig(t *testing.T) {
 			want: "host",
 		},
 		{
+			name: "endpoint ip host",
+			body: "network:\n  endpoints:\n    - host: 10.0.0.1\n      port: 443\n",
+			want: "host",
+		},
+		{
+			name: "endpoint host starts with hyphen",
+			body: "network:\n  endpoints:\n    - host: -bad.example\n      port: 443\n",
+			want: "host",
+		},
+		{
+			name: "endpoint host ends with hyphen",
+			body: "network:\n  endpoints:\n    - host: bad-.example\n      port: 443\n",
+			want: "host",
+		},
+		{
 			name: "endpoint http without required mitm",
 			body: "network:\n  endpoints:\n    - host: api.github.com\n      port: 443\n      http:\n        default: deny\n",
 			want: "mitm.required",

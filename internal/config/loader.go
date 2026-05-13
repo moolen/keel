@@ -381,10 +381,14 @@ func validateNetwork(network NetworkConfig) error {
 }
 
 func validEndpointHost(host string) bool {
-	if host != strings.TrimSpace(host) || host == "" {
+	trimmed := strings.TrimSpace(host)
+	if trimmed == "" || trimmed != host {
 		return false
 	}
 	if strings.ContainsAny(host, " \t\r\n/") || strings.Contains(host, "://") {
+		return false
+	}
+	if net.ParseIP(host) != nil {
 		return false
 	}
 	if strings.HasPrefix(host, "*.") {
@@ -397,6 +401,9 @@ func validEndpointHost(host string) bool {
 	}
 	for _, label := range strings.Split(host, ".") {
 		if label == "" {
+			return false
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
 			return false
 		}
 		for _, r := range label {
