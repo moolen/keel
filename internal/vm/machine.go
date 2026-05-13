@@ -48,11 +48,12 @@ type AttachedVolume struct {
 }
 
 type Machine struct {
-	Config         config.Config
-	Assets         RuntimeAssets
-	NewVM          func(hypervisor.Config) (hypervisor.VM, error)
-	AttachPTY      func(context.Context, hypervisor.VM) error
-	PrepareNetwork func(context.Context) (*GuestNetwork, func(), error)
+	Config              config.Config
+	Assets              RuntimeAssets
+	NewVM               func(hypervisor.Config) (hypervisor.VM, error)
+	AttachPTY           func(context.Context, hypervisor.VM) error
+	PrepareNetwork      func(context.Context) (*GuestNetwork, func(), error)
+	EnsureKVMAccessFunc func() error
 }
 
 func NewMachine(cfg config.Config, assets RuntimeAssets) *Machine {
@@ -135,7 +136,7 @@ func (m *Machine) Prepare(ctx context.Context) (hypervisor.VM, func(), error) {
 	if err := m.Validate(); err != nil {
 		return nil, nil, err
 	}
-	if err := ensureKVMAccess(); err != nil {
+	if err := m.EnsureKVMAccess(); err != nil {
 		return nil, nil, err
 	}
 
@@ -200,6 +201,9 @@ func (m *Machine) Run(ctx context.Context) error {
 	}
 	defer cleanup()
 
+	if err := m.EnsureKVMAccess(); err != nil {
+		return err
+	}
 	if err := instance.Start(ctx); err != nil {
 		return err
 	}
@@ -211,6 +215,13 @@ func (m *Machine) Run(ctx context.Context) error {
 		return err
 	}
 	return instance.Wait(ctx)
+}
+
+func (m *Machine) EnsureKVMAccess() error {
+	if m.EnsureKVMAccessFunc != nil {
+		return m.EnsureKVMAccessFunc()
+	}
+	return ensureKVMAccess()
 }
 
 func (m *Machine) AttachPTYToVM(ctx context.Context, instance hypervisor.VM) error {

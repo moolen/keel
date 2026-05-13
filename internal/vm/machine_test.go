@@ -252,6 +252,36 @@ func TestRunRemovesStaleRuntimeSockets(t *testing.T) {
 	}
 }
 
+func TestRunRechecksKVMAccessBeforeStartingVM(t *testing.T) {
+	assets := createRuntimeAssets(t)
+	cfg := config.Default()
+
+	var kvmChecks int
+	machine := NewMachine(cfg, assets)
+	machine.EnsureKVMAccessFunc = func() error {
+		kvmChecks++
+		return nil
+	}
+	machine.PrepareNetwork = func(context.Context) (*GuestNetwork, func(), error) {
+		return nil, func() {}, nil
+	}
+	machine.AttachPTY = func(context.Context, hypervisor.VM) error { return nil }
+	machine.NewVM = func(hypervisor.Config) (hypervisor.VM, error) {
+		return stubVM{
+			start: func(context.Context) error {
+				if kvmChecks != 2 {
+					t.Fatalf("kvm checks before Start = %d, want 2", kvmChecks)
+				}
+				return nil
+			},
+		}, nil
+	}
+
+	if err := machine.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
 func createRuntimeAssets(t *testing.T) RuntimeAssets {
 	t.Helper()
 	dir := t.TempDir()

@@ -16,8 +16,9 @@ import (
 )
 
 type e2eSuite struct {
-	repoRoot  string
-	artifacts builtArtifacts
+	repoRoot      string
+	imageCacheDir string
+	artifacts     builtArtifacts
 }
 
 type e2eProject struct {
@@ -50,10 +51,31 @@ func newE2ESuite(t *testing.T) *e2eSuite {
 	t.Helper()
 	requireE2EPrerequisites(t)
 	repoRoot := findRepoRoot(t)
+	imageCacheDir := e2eImageCacheDir(t)
 	return &e2eSuite{
-		repoRoot:  repoRoot,
-		artifacts: buildArtifacts(t, repoRoot),
+		repoRoot:      repoRoot,
+		imageCacheDir: imageCacheDir,
+		artifacts:     buildArtifacts(t, repoRoot),
 	}
+}
+
+func e2eImageCacheDir(t *testing.T) string {
+	t.Helper()
+	if path := strings.TrimSpace(os.Getenv("KEEL_E2E_IMAGE_CACHE_DIR")); path != "" {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cacheRoot, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cacheRoot, "keel", "e2e-images")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func (s *e2eSuite) newProject(t *testing.T) *e2eProject {
@@ -64,8 +86,7 @@ func (s *e2eSuite) newProject(t *testing.T) *e2eProject {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	cacheDir := filepath.Join(home, ".cache", "keel", "images")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	if err := os.MkdirAll(s.imageCacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,7 +94,7 @@ func (s *e2eSuite) newProject(t *testing.T) *e2eProject {
 		suite:    s,
 		dir:      projectDir,
 		home:     home,
-		cacheDir: cacheDir,
+		cacheDir: s.imageCacheDir,
 		kernel:   hostKernelPath(),
 	}
 	project.fixtures = writeE2EFixtures(t, projectDir)
@@ -114,46 +135,25 @@ func main() {
 	fmt.Println("hello from go")
 }
 `)
-	writeTextFile(t, filepath.Join(fixtures.NodeDir, "Dockerfile"), `FROM node:20-slim
+	writeTextFile(t, filepath.Join(fixtures.NodeDir, "Dockerfile"), `FROM quay.io/libpod/alpine:latest
 WORKDIR /app
-COPY package.json .
-RUN npm install
-COPY server.js .
+COPY server.sh .
 EXPOSE 3000
-CMD ["node", "server.js"]
+CMD ["sh", "server.sh"]
 `)
-	writeTextFile(t, filepath.Join(fixtures.NodeDir, "package.json"), `{
-  "name": "keel-test",
-  "version": "1.0.0",
-  "dependencies": {}
-}
+	writeTextFile(t, filepath.Join(fixtures.NodeDir, "server.sh"), `while true; do
+  printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 16\r\n\r\nhello from node\n' | nc -l -p 3000
+done
 `)
-	writeTextFile(t, filepath.Join(fixtures.NodeDir, "server.js"), `const http = require('http');
-const server = http.createServer((req, res) => {
-  res.writeHead(200, {'Content-Type': 'text/plain'});
-  res.end('hello from node\n');
-});
-server.listen(3000, () => console.log('listening on 3000'));
-`)
-	writeTextFile(t, filepath.Join(fixtures.PythonDir, "Dockerfile"), `FROM python:3.12-slim
+	writeTextFile(t, filepath.Join(fixtures.PythonDir, "Dockerfile"), `FROM quay.io/libpod/alpine:latest
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY server.py .
+COPY server.sh .
 EXPOSE 5000
-CMD ["python", "server.py"]
+CMD ["sh", "server.sh"]
 `)
-	writeTextFile(t, filepath.Join(fixtures.PythonDir, "requirements.txt"), "")
-	writeTextFile(t, filepath.Join(fixtures.PythonDir, "server.py"), `from http.server import HTTPServer, BaseHTTPRequestHandler
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b'hello from python\n')
-
-HTTPServer(('0.0.0.0', 5000), Handler).serve_forever()
+	writeTextFile(t, filepath.Join(fixtures.PythonDir, "server.sh"), `while true; do
+  printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nhello from python\n' | nc -l -p 5000
+done
 `)
 	return fixtures
 }

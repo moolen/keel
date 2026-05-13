@@ -19,6 +19,7 @@ const (
 	dockerBridgeSubnet = "172.17.0.0/16"
 	dockerProxyURL     = "http://172.17.0.1:3128"
 	dockerCgroupParent = "/keel/docker"
+	dockerLegacyBinDir = "/run/keel-docker-bin"
 )
 
 type ConfiguredFeature struct {
@@ -87,6 +88,10 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if err != nil {
 		return fmt.Errorf("docker feature requires iptables in PATH: %w", err)
 	}
+	if legacyPath, ok := findOptionalBinary(lookupPath, stat, "iptables-legacy", []string{"/usr/sbin/iptables-legacy", "/sbin/iptables-legacy", "/usr/bin/iptables-legacy", "/bin/iptables-legacy"}); ok {
+		iptablesPath = legacyPath
+	}
+	ip6tablesLegacyPath, hasIP6TablesLegacy := findOptionalBinary(lookupPath, stat, "ip6tables-legacy", []string{"/usr/sbin/ip6tables-legacy", "/sbin/ip6tables-legacy", "/usr/bin/ip6tables-legacy", "/bin/ip6tables-legacy"})
 
 	mkdirAll := r.MkdirAll
 	if mkdirAll == nil {
@@ -146,6 +151,19 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if err := writeFile("/etc/docker/client/config.json", clientConfig, 0o644); err != nil {
 		return err
 	}
+	daemonEnv := env
+	if strings.HasSuffix(iptablesPath, "iptables-legacy") {
+		if err := installDockerCommandWrapper(mkdirAll, writeFile, "iptables", iptablesPath); err != nil {
+			return err
+		}
+		if hasIP6TablesLegacy {
+			if err := installDockerCommandWrapper(mkdirAll, writeFile, "ip6tables", ip6tablesLegacyPath); err != nil {
+				return err
+			}
+		}
+		daemonEnv = prependEnvPath(env, dockerLegacyBinDir)
+	}
+	daemonEnv = appendEnvIfMissing(daemonEnv, "DOCKER_INSECURE_NO_IPTABLES_RAW=1")
 	if strings.TrimSpace(cfg.MITMCAPEM) != "" {
 		if err := writeFile("/etc/docker/certs.d/keel-mitm/ca.crt", []byte(cfg.MITMCAPEM), 0o644); err != nil {
 			return err
@@ -186,7 +204,7 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if startProcess == nil {
 		startProcess = startGuestProcess
 	}
-	if err := startProcess(ctx, dockerdPath, []string{"--host=unix:///var/run/docker.sock", "--config-file=/etc/docker/daemon.json"}, env, "/", r.WorkloadCgroupFD); err != nil {
+	if err := startProcess(ctx, dockerdPath, []string{"--host=unix:///var/run/docker.sock", "--config-file=/etc/docker/daemon.json"}, daemonEnv, "/", r.WorkloadCgroupFD); err != nil {
 		return err
 	}
 
@@ -201,10 +219,46 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if waitForDaemon == nil {
 		waitForDaemon = waitForDockerDaemon
 	}
-	if err := waitForDaemon(env); err != nil {
+	if err := waitForDaemon(daemonEnv); err != nil {
 		return err
 	}
 	return ensureDockerTransparentRedirect(runCommand, iptablesPath)
+}
+
+func installDockerCommandWrapper(mkdirAll func(string, os.FileMode) error, writeFile func(string, []byte, os.FileMode) error, name, target string) error {
+	if err := mkdirAll(dockerLegacyBinDir, 0o755); err != nil {
+		return err
+	}
+	body := []byte("#!/bin/sh\nexec " + target + " \"$@\"\n")
+	if err := writeFile(dockerLegacyBinDir+"/"+name, body, 0o755); err != nil {
+		return fmt.Errorf("write docker %s wrapper: %w", name, err)
+	}
+	return nil
+}
+
+func prependEnvPath(env []string, dir string) []string {
+	out := append([]string(nil), env...)
+	for i, entry := range out {
+		if strings.HasPrefix(entry, "PATH=") {
+			out[i] = "PATH=" + dir + ":" + strings.TrimPrefix(entry, "PATH=")
+			return out
+		}
+	}
+	return append(out, "PATH="+dir)
+}
+
+func appendEnvIfMissing(env []string, entry string) []string {
+	key, _, ok := strings.Cut(entry, "=")
+	if !ok {
+		return append(env, entry)
+	}
+	prefix := key + "="
+	for _, existing := range env {
+		if strings.HasPrefix(existing, prefix) {
+			return env
+		}
+	}
+	return append(env, entry)
 }
 
 func startGuestProcess(ctx context.Context, name string, args []string, env []string, dir string, cgroupFD int) error {
@@ -338,4 +392,9 @@ func findBinary(lookupPath func(string) (string, error), stat func(string) (os.F
 		}
 	}
 	return "", err
+}
+
+func findOptionalBinary(lookupPath func(string) (string, error), stat func(string) (os.FileInfo, error), name string, candidates []string) (string, bool) {
+	path, err := findBinary(lookupPath, stat, name, candidates)
+	return path, err == nil
 }

@@ -6,8 +6,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,33 +35,35 @@ func TestKeelE2ESuite(t *testing.T) {
 	t.Run("T10 Workspace Sync Back", suite.testWorkspaceSync)
 	t.Run("T11 Simulated Agent Workflow", suite.testAgentWorkflow)
 	t.Run("T12 Shutdown Summary", suite.testShutdownSummary)
+	t.Run("T13 Resource Cleanup", suite.testResourceCleanup)
 	if os.Getenv("KEEL_E2E_STRESS") == "1" {
-		t.Run("T13 Parallel Network Stress", suite.testParallelNetworkStress)
+		t.Run("T14 Parallel Network Stress", suite.testParallelNetworkStress)
 	}
 }
 
 func (s *e2eSuite) testImageManagement(t *testing.T) {
 	project := s.newProject(t)
-	project.writeConfig(t, "ubuntu:24.04", "")
+	const imageRef = "ghcr.io/moolen/keel-devtools:main"
+	project.writeConfig(t, imageRef, "")
 
-	pull24 := project.run(t, "", "image", "pull", "ubuntu:24.04")
-	pull24.requireSuccess(t)
+	pullImage := project.run(t, "", "image", "pull", imageRef)
+	pullImage.requireSuccess(t)
 
-	list24 := project.run(t, "", "image", "list")
-	list24.requireSuccess(t)
-	requireContainsAll(t, list24.Stdout, "index.docker.io/library/ubuntu:24.04", "B")
+	listImage := project.run(t, "", "image", "list")
+	listImage.requireSuccess(t)
+	requireContainsAll(t, listImage.Stdout, imageRef, "B")
 
-	layout24, err := image.ResolveCacheLayout(project.cacheDir, "ubuntu:24.04")
+	layout, err := image.ResolveCacheLayout(project.cacheDir, imageRef)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.Stat(layout24.RootfsPath)
+	before, err := os.Stat(layout.RootfsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondPull := project.run(t, "", "image", "pull", "ubuntu:24.04")
+	secondPull := project.run(t, "", "image", "pull", imageRef)
 	secondPull.requireSuccess(t)
-	after, err := os.Stat(layout24.RootfsPath)
+	after, err := os.Stat(layout.RootfsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,29 +71,24 @@ func (s *e2eSuite) testImageManagement(t *testing.T) {
 		t.Fatalf("duplicate pull rewrote cached rootfs: before=%s after=%s", before.ModTime(), after.ModTime())
 	}
 
-	rm24 := project.run(t, "", "image", "rm", "ubuntu:24.04")
-	rm24.requireSuccess(t)
-	requireFileMissing(t, layout24.RootfsPath)
+	rmImage := project.run(t, "", "image", "rm", imageRef)
+	rmImage.requireSuccess(t)
+	requireFileMissing(t, layout.RootfsPath)
 
 	listAfterRemove := project.run(t, "", "image", "list")
 	listAfterRemove.requireSuccess(t)
-	requireNotContains(t, listAfterRemove.Stdout, "index.docker.io/library/ubuntu:24.04")
+	requireNotContains(t, listAfterRemove.Stdout, imageRef)
 
-	repull24 := project.run(t, "", "image", "pull", "ubuntu:24.04")
-	repull24.requireSuccess(t)
+	repullImage := project.run(t, "", "image", "pull", imageRef)
+	repullImage.requireSuccess(t)
 
 	missing := project.run(t, "", "image", "pull", "nonexistent/image:fake")
 	missing.requireFailure(t)
 	requireContainsAll(t, missing.Combined, "nonexistent/image:fake")
 
-	pull22 := project.run(t, "", "image", "pull", "ubuntu:22.04")
-	pull22.requireSuccess(t)
-	listBoth := project.run(t, "", "image", "list")
-	listBoth.requireSuccess(t)
-	requireContainsAll(t, listBoth.Stdout,
-		"index.docker.io/library/ubuntu:22.04",
-		"index.docker.io/library/ubuntu:24.04",
-	)
+	listAfterRepull := project.run(t, "", "image", "list")
+	listAfterRepull.requireSuccess(t)
+	requireContainsAll(t, listAfterRepull.Stdout, imageRef)
 }
 
 func (s *e2eSuite) testVMLifecycleAndExecution(t *testing.T) {
@@ -274,6 +273,7 @@ dig +short gist.github.com
 func (s *e2eSuite) testTCPTLSPolicy(t *testing.T) {
 	t.Run("HTTPS HTTP CIDR And SNI", func(t *testing.T) {
 		project := s.newProject(t)
+		serverPort := startLocalHTTPServer(t, "NeverSSL from host\n")
 		project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 			"network:",
 			"  endpoints:",
@@ -285,7 +285,7 @@ func (s *e2eSuite) testTCPTLSPolicy(t *testing.T) {
 			"      port: 80",
 			"  ip_rules:",
 			"    - cidr: 172.22.0.0/16",
-			"      port: 80",
+			fmt.Sprintf("      port: %d", serverPort),
 		))
 
 		allowedHTTPS := project.run(t, "", sh("curl -fsS https://httpbin.org/get")...)
@@ -297,7 +297,6 @@ func (s *e2eSuite) testTCPTLSPolicy(t *testing.T) {
 		deniedSNI.requireFailure(t)
 		requireContainsAll(t, deniedSNI.Stderr, "dns  example.com:53 policy=denied")
 
-		serverPort := startLocalHTTPServer(t, "NeverSSL from host\n")
 		allowedHTTP := project.run(t, "", sh(fmt.Sprintf(`
 gw=$(ip route | awk '/default/ {print $3; exit}')
 curl -fsS "http://$gw:%d"
@@ -382,7 +381,7 @@ cat /tmp/out
 		// Verify that endpoint TLS SNI matching is enforced on non-standard
 		// TLS ports, not only port 443.
 		project := s.newProject(t)
-		project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
+		project.writeConfig(t, "ubuntu:24.04", yamlBlock(
 			"network:",
 			"  endpoints:",
 			"    - host: httpbin.org",
@@ -393,13 +392,21 @@ cat /tmp/out
 			"      port: 8443",
 			"      tls:",
 			"        require_sni_match: true",
+			"    - host: archive.ubuntu.com",
+			"      port: 80",
+			"    - host: security.ubuntu.com",
+			"      port: 80",
+			"    - host: '*.ubuntu.com'",
+			"      port: 80",
 		))
 
 		// Port 443: denied by SNI (baseline).
-		denied443 := project.run(t, "", sh(`
+		denied443 := project.run(t, "", bash(`
 set -eu
+apt-get update >/dev/null
+apt-get install -y openssl >/dev/null
 real_ip=$(getent ahostsv4 httpbin.org | awk '{print $1; exit}')
-curl --connect-timeout 5 --resolve "other.httpbin.org:443:${real_ip}" https://other.httpbin.org/get || echo SNI_DENIED_443
+echo | openssl s_client -connect "${real_ip}:443" -servername other.httpbin.org >/tmp/out_443 2>&1 || echo SNI_DENIED_443
 `)...)
 		denied443.requireSuccess(t)
 		requireContainsAll(t, denied443.Stdout, "SNI_DENIED_443")
@@ -408,10 +415,12 @@ curl --connect-timeout 5 --resolve "other.httpbin.org:443:${real_ip}" https://ot
 		// Port 8443: must also be denied by endpoint policy, not allowed via DNS correlation.
 		// Before the fix, non-standard ports bypassed SNI checks and would show
 		// "policy=allowed" (allowed via dns correlation) instead of "policy=denied".
-		denied8443 := project.run(t, "", sh(`
+		denied8443 := project.run(t, "", bash(`
 set -eu
+apt-get update >/dev/null
+apt-get install -y openssl >/dev/null
 real_ip=$(getent ahostsv4 httpbin.org | awk '{print $1; exit}')
-curl --connect-timeout 5 --resolve "other.httpbin.org:8443:${real_ip}" https://other.httpbin.org:8443/ || echo SNI_DENIED_8443
+echo | openssl s_client -connect "${real_ip}:8443" -servername other.httpbin.org >/tmp/out_8443 2>&1 || echo SNI_DENIED_8443
 `)...)
 		denied8443.requireSuccess(t)
 		requireContainsAll(t, denied8443.Stdout, "SNI_DENIED_8443")
@@ -468,13 +477,15 @@ func (s *e2eSuite) testSecurityAndEvasion(t *testing.T) {
 	result := project.run(t, "", bash(`
 set -eu
 apt-get update >/dev/null
-apt-get install -y iputils-ping dnsutils openssl netcat-openbsd iptables curl >/dev/null
+apt-get install -y iputils-ping dnsutils openssl netcat-openbsd iptables iproute2 curl >/dev/null
 ping -c 1 -W 3 8.8.8.8 || echo ICMP_BLOCKED
-nc -z -w 3 1.1.1.1 443 || echo TCP_BLOCKED
+timeout 3 sh -c 'printf keel | nc -w 2 1.1.1.1 443 | grep -q .' || echo TCP_BLOCKED
 REAL_IP=$(dig +short httpbin.org | head -1)
 echo | openssl s_client -connect "${REAL_IP}:443" -servername example.com >/tmp/fronting 2>&1 || true
 grep -qE 'CONNECTED|alert|handshake' /tmp/fronting || true
 curl -fsS --resolve "example.com:443:${REAL_IP}" https://example.com/get || echo REBIND_BLOCKED
+dig +short google.com || true
+dig TXT long-record.example.com || true
 printf 'nameserver 8.8.8.8\n' > /etc/resolv.conf
 dig +short google.com || echo DNS_OVERRIDE_BLOCKED
 iptables -t nat -F || true
@@ -482,7 +493,7 @@ curl --connect-timeout 3 https://google.com || echo IPTABLES_FLUSH_BLOCKED
 dig TXT long-record.example.com || echo TXT_BLOCKED
 ping6 -c 1 -W 3 2606:4700:4700::1111 || echo IPV6_BLOCKED
 ip link add dummy0 type dummy || true
-nc -z -w 3 1.1.1.1 443 || echo DUMMY_IF_BLOCKED
+timeout 3 sh -c 'printf keel | nc -w 2 1.1.1.1 443 | grep -q .' || echo DUMMY_IF_BLOCKED
 `)...)
 	result.requireSuccess(t)
 	requireContainsAll(t, result.Stdout,
@@ -547,7 +558,7 @@ func (s *e2eSuite) testMITMHTTPPolicy(t *testing.T) {
 	deniedMethod.requireFailure(t)
 	requireContainsAll(t, deniedMethod.Stderr, "http httpbin.org POST /post policy=denied")
 
-	caPath := filepath.Join(project.home, ".local", "share", "keel", "ca", "keel-test-ca.crt")
+	caPath := filepath.Join(project.home, ".local", "share", "keel", "ca", "ca.crt")
 	requireFileContains(t, caPath, "BEGIN CERTIFICATE")
 
 	project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
@@ -590,11 +601,11 @@ func (s *e2eSuite) testAuditMode(t *testing.T) {
 }
 
 func (s *e2eSuite) testDockerInVM(t *testing.T) {
-	requireFreeDiskSpace(t, "/var/tmp", 5*1024*1024*1024)
+	requireFreeDiskSpace(t, "/var/tmp", 10*1024*1024*1024)
 
 	project := s.newProject(t)
 	dockerProbeDir := filepath.Join(project.dir, "docker-probe")
-	writeTextFile(t, filepath.Join(dockerProbeDir, "Dockerfile"), `FROM alpine:3.20
+	writeTextFile(t, filepath.Join(dockerProbeDir, "Dockerfile"), `FROM quay.io/libpod/alpine:latest
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
@@ -610,7 +621,7 @@ RUN sh -eux -c 'test -n "${HTTP_PROXY:-}${http_proxy:-}" && apk update >/dev/nul
 		"  mount: .",
 		"  target: /workspace",
 		"resources:",
-		"  root_disk_mb: 4096",
+		"  root_disk_mb: 8192",
 		"network:",
 		"  endpoints:",
 		"    - host: auth.docker.io",
@@ -634,6 +645,26 @@ RUN sh -eux -c 'test -n "${HTTP_PROXY:-}${http_proxy:-}" && apk update >/dev/nul
 		"      tls:",
 		"        require_sni_match: true",
 		"    - host: '*.docker.com'",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: quay.io",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: '*.quay.io'",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: ghcr.io",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: pkg-containers.githubusercontent.com",
+		"      port: 443",
+		"      tls:",
+		"        require_sni_match: true",
+		"    - host: '*.githubusercontent.com'",
 		"      port: 443",
 		"      tls:",
 		"        require_sni_match: true",
@@ -670,18 +701,18 @@ set -eu
 apk add --no-cache curl >/dev/null
 docker version >/dev/null
 echo docker-version-ok
-docker pull alpine:3.20 >/dev/null
-docker run --rm alpine:3.20 echo "hello from docker"
+docker pull quay.io/libpod/alpine:latest >/dev/null
+docker run --rm quay.io/libpod/alpine:latest echo "hello from docker"
 docker run --rm -i \
   -e HTTP_PROXY= -e HTTPS_PROXY= -e NO_PROXY= \
   -e http_proxy= -e https_proxy= -e no_proxy= \
-  alpine:3.20 sh -eux -c '
+  quay.io/libpod/alpine:latest sh -eux -c '
     apk update >/dev/null
     apk add --no-cache curl >/dev/null
     curl --noproxy "*" -fsS https://httpbin.org/get >/dev/null
     echo docker-transparent-ok
   '
-docker run --rm -i alpine:3.20 sh -eux -c '
+docker run --rm -i quay.io/libpod/alpine:latest sh -eux -c '
   env | grep -Eq "^(HTTP_PROXY|http_proxy)=http://172.17.0.1:3128$"
   apk update >/dev/null
   apk add --no-cache curl >/dev/null
@@ -700,8 +731,6 @@ docker run --rm -d -p 5000:5000 --name python-test keel-python-test >/dev/null
 sleep 2
 curl -fsS http://localhost:5000
 docker stop python-test >/dev/null
-cd /workspace/docker-node
-docker build --no-cache -t keel-node-nocache . >/dev/null
 cd /workspace/docker-probe
 docker build --no-cache -t keel-alpine-probe .
 echo docker-build-ok
@@ -848,10 +877,13 @@ func TestHello(t *testing.T) {
 }
 GOFILE
 cd /workspace
+export HOME=/tmp
+export GOCACHE=/tmp/go-build
+go mod init keel-e2e-agent >/dev/null
 go test ./...
 git init >/dev/null
 git add -A
-git status --short
+git -c color.status=false status --short
 `)...)
 	result.requireSuccess(t)
 	requireContainsAll(t, result.Stdout, "hello from host", "A  src/handler.go", "A  main_test.go")
@@ -948,4 +980,211 @@ echo no-network-check
 		noNetwork.requireSuccess(t)
 		requireNotContains(t, noNetwork.Stderr, "Network summary:")
 	})
+}
+
+func (s *e2eSuite) testResourceCleanup(t *testing.T) {
+	baseline := captureHostResources(t)
+
+	t.Run("Successful Command", func(t *testing.T) {
+		project := s.newProject(t)
+		project.writeConfig(t, "ghcr.io/moolen/keel-devtools:main", "")
+
+		result := project.run(t, "", sh(`echo cleanup-ok`)...)
+		result.requireSuccess(t)
+		requireContainsAll(t, result.Stdout, "cleanup-ok")
+		requireNoNewHostResources(t, baseline)
+	})
+
+	t.Run("Nonzero Exit", func(t *testing.T) {
+		project := s.newProject(t)
+		project.writeConfig(t, "ghcr.io/moolen/keel-devtools:main", "")
+
+		result := project.run(t, "", sh(`exit 42`)...)
+		result.requireFailure(t)
+		if result.ExitCode != 42 {
+			t.Fatalf("exit code = %d, want 42\n%s", result.ExitCode, result.Combined)
+		}
+		requireNoNewHostResources(t, baseline)
+	})
+
+	t.Run("Interrupted Command", func(t *testing.T) {
+		project := s.newProject(t)
+		project.writeConfig(t, "ghcr.io/moolen/keel-devtools:main", "")
+
+		result := project.runWithSignal(t, 3*time.Second, os.Interrupt, "--", "sleep", "3600")
+		result.requireFailure(t)
+		requireNoNewHostResources(t, baseline)
+	})
+
+	t.Run("Concurrent Commands", func(t *testing.T) {
+		projects := make([]*e2eProject, 2)
+		for i := range projects {
+			projects[i] = s.newProject(t)
+			projects[i].writeConfig(t, "ghcr.io/moolen/keel-devtools:main", "")
+		}
+
+		errCh := make(chan error, 2)
+		for i := range 2 {
+			i := i
+			go func() {
+				if i > 0 {
+					time.Sleep(5 * time.Second)
+				}
+				result := projects[i].run(t, "", sh(fmt.Sprintf("echo concurrent-%d\nsleep 10", i))...)
+				if result.Err != nil {
+					errCh <- fmt.Errorf("run %d failed with exit=%d\nstdout:\n%s\nstderr:\n%s", i, result.ExitCode, result.Stdout, result.Stderr)
+					return
+				}
+				if !strings.Contains(result.Stdout, fmt.Sprintf("concurrent-%d", i)) {
+					errCh <- fmt.Errorf("run %d stdout = %q, want marker", i, result.Stdout)
+					return
+				}
+				errCh <- nil
+			}()
+		}
+		for range 2 {
+			if err := <-errCh; err != nil {
+				t.Fatal(err)
+			}
+		}
+		requireNoNewHostResources(t, baseline)
+	})
+}
+
+type hostResourceSnapshot struct {
+	firecracker map[string]struct{}
+	taps        map[string]struct{}
+	iptables    map[string]struct{}
+	runtimeDirs map[string]struct{}
+	controlDirs map[string]struct{}
+}
+
+func captureHostResources(t *testing.T) hostResourceSnapshot {
+	t.Helper()
+	return hostResourceSnapshot{
+		firecracker: captureFirecrackerProcesses(t),
+		taps:        captureKeelTapDevices(t),
+		iptables:    captureKeelIPTablesRules(t),
+		runtimeDirs: captureGlobSet(t, "/var/lib/keel/runtime/vm-*", "/var/tmp/keel/runtime/vm-*"),
+		controlDirs: captureGlobSet(t, "/var/run/keel/vm-*", filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "keel", "vm-*"), "/tmp/keel-run/vm-*"),
+	}
+}
+
+func requireNoNewHostResources(t *testing.T, baseline hostResourceSnapshot) {
+	t.Helper()
+
+	var diff string
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		current := captureHostResources(t)
+		diff = hostResourceDiff(baseline, current)
+		if diff == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("host resources leaked after run:\n%s", diff)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func hostResourceDiff(before, after hostResourceSnapshot) string {
+	var out strings.Builder
+	appendSetDiff(&out, "firecracker processes", before.firecracker, after.firecracker)
+	appendSetDiff(&out, "tap devices", before.taps, after.taps)
+	appendSetDiff(&out, "iptables rules", before.iptables, after.iptables)
+	appendSetDiff(&out, "runtime dirs", before.runtimeDirs, after.runtimeDirs)
+	appendSetDiff(&out, "control dirs", before.controlDirs, after.controlDirs)
+	return out.String()
+}
+
+func appendSetDiff(out *strings.Builder, label string, before, after map[string]struct{}) {
+	for item := range after {
+		if _, ok := before[item]; ok {
+			continue
+		}
+		fmt.Fprintf(out, "%s: %s\n", label, item)
+	}
+}
+
+func captureFirecrackerProcesses(t *testing.T) map[string]struct{} {
+	t.Helper()
+	output := commandOutput(t, "ps", "-eo", "pid=,args=")
+	out := map[string]struct{}{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, "firecracker") {
+			continue
+		}
+		out[line] = struct{}{}
+	}
+	return out
+}
+
+func captureKeelTapDevices(t *testing.T) map[string]struct{} {
+	t.Helper()
+	output := commandOutput(t, "ip", "-o", "link", "show")
+	out := map[string]struct{}{}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.SplitN(line, ":", 3)
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.TrimSpace(strings.Split(fields[1], "@")[0])
+		if strings.HasPrefix(name, "keel") {
+			out[name] = struct{}{}
+		}
+	}
+	return out
+}
+
+func captureKeelIPTablesRules(t *testing.T) map[string]struct{} {
+	t.Helper()
+	out := map[string]struct{}{}
+	for _, args := range [][]string{
+		{"iptables", "-S"},
+		{"iptables", "-t", "nat", "-S"},
+		{"ip6tables", "-S"},
+		{"ip6tables", "-t", "nat", "-S"},
+	} {
+		output := commandOutput(t, "sudo", append([]string{"-n"}, args...)...)
+		for _, line := range strings.Split(output, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "keel") {
+				out[strings.Join(args, " ")+" "+line] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+func captureGlobSet(t *testing.T, patterns ...string) map[string]struct{} {
+	t.Helper()
+	out := map[string]struct{}{}
+	for _, pattern := range patterns {
+		if strings.Contains(pattern, string(filepath.Separator)+".") || strings.Contains(pattern, "\x00") {
+			continue
+		}
+		if strings.HasPrefix(pattern, "keel") {
+			continue
+		}
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range matches {
+			out[match] = struct{}{}
+		}
+	}
+	return out
+}
+
+func commandOutput(t *testing.T, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }

@@ -235,6 +235,9 @@ func (r HostRunner) runPreparedVM(ctx context.Context, req RunRequest, machine *
 	progress.Step(startupPhase(10, "booting vm and attaching terminal", "handing off to guest process"))
 	progress.Stop()
 	r.warnNetworkAuditMode(req)
+	if err := machine.EnsureKVMAccess(); err != nil {
+		return err
+	}
 	if err := instance.Start(ctx); err != nil {
 		return err
 	}
@@ -470,6 +473,27 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 		return vm.RuntimeAssets{}, err
 	}
 	runtimeRootfsPath := filepath.Join(runtimeDir, "rootfs.ext4")
+	workspacePath := filepath.Join(runtimeDir, "workspace.ext4")
+	assets := vm.RuntimeAssets{
+		KernelPath:    kernelPath,
+		RootfsPath:    runtimeRootfsPath,
+		WorkspacePath: workspacePath,
+		MetadataPath:  filepath.Join(runtimeDir, "bootmeta.ext4"),
+		SocketPath:    filepath.Join(controlDir, "firecracker.sock"),
+		VSockPath:     filepath.Join(controlDir, "firecracker.vsock"),
+		LogPath:       filepath.Join(runtimeDir, "logs", "firecracker.log"),
+		RuntimeDir:    runtimeDir,
+		ControlDir:    controlDir,
+		CleanupDir:    r.RuntimeDir == "",
+		CID:           52,
+	}
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError {
+			r.cleanupRuntimeAssets(assets)
+		}
+	}()
+
 	if r.RuntimeDir == "" || r.RuntimeFreeBytes != nil {
 		if err := ensureRuntimeCapacity(runtimeDir, layout.RootfsPath, cfg, r.runtimeFreeBytes); err != nil {
 			return vm.RuntimeAssets{}, err
@@ -492,26 +516,6 @@ func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progre
 	if err := r.prepareFeatures(runtimeRootfsPath, cfg.Features); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
-	workspacePath := filepath.Join(runtimeDir, "workspace.ext4")
-	assets := vm.RuntimeAssets{
-		KernelPath:    kernelPath,
-		RootfsPath:    runtimeRootfsPath,
-		WorkspacePath: workspacePath,
-		MetadataPath:  filepath.Join(runtimeDir, "bootmeta.ext4"),
-		SocketPath:    filepath.Join(controlDir, "firecracker.sock"),
-		VSockPath:     filepath.Join(controlDir, "firecracker.vsock"),
-		LogPath:       filepath.Join(runtimeDir, "logs", "firecracker.log"),
-		RuntimeDir:    runtimeDir,
-		ControlDir:    controlDir,
-		CleanupDir:    r.RuntimeDir == "",
-		CID:           52,
-	}
-	cleanupOnError := true
-	defer func() {
-		if cleanupOnError {
-			r.cleanupRuntimeAssets(assets)
-		}
-	}()
 
 	preparer := r.WorkspacePreparer
 	if preparer == nil {

@@ -141,6 +141,42 @@ func TestRunPreparedVMLeavesPipedInputForSyncConfirmation(t *testing.T) {
 	}
 }
 
+func TestRunPreparedVMRechecksKVMAccessBeforeStart(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Network.Mode = "none"
+
+	var kvmChecks int
+	instance := &stubHypervisorVM{
+		start: func(context.Context) error {
+			if kvmChecks != 2 {
+				t.Fatalf("kvm checks before Start = %d, want 2", kvmChecks)
+			}
+			return nil
+		},
+		listen: func(port uint32) (net.Listener, error) {
+			return (&net.ListenConfig{}).Listen(context.Background(), "unix", filepath.Join(t.TempDir(), "vsock-"+strconv.Itoa(int(port))))
+		},
+	}
+	machine := vm.NewMachine(cfg, runtimeAssetsForHostRunnerVMTest(t, tempDir))
+	machine.EnsureKVMAccessFunc = func() error {
+		kvmChecks++
+		return nil
+	}
+	machine.NewVM = func(hypervisor.Config) (hypervisor.VM, error) {
+		return instance, nil
+	}
+	machine.AttachPTY = func(context.Context, hypervisor.VM) error {
+		return nil
+	}
+
+	runner := HostRunner{}
+	req := RunRequest{Config: cfg}
+	if err := runner.runPreparedVM(context.Background(), req, machine, nopProgressReporter{}); err != nil {
+		t.Fatalf("runPreparedVM() error = %v", err)
+	}
+}
+
 func TestHostRunnerPreparesAssetsBeforeLaunch(t *testing.T) {
 	tempDir := t.TempDir()
 	sourceDir := t.TempDir()
@@ -260,6 +296,7 @@ func TestHostRunnerExpandsRuntimeRootfsWhenRootDiskConfigured(t *testing.T) {
 
 func TestHostRunnerFailsFastWhenRuntimeSpaceIsInsufficient(t *testing.T) {
 	tempDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(tempDir, "run"))
 	sourceDir := t.TempDir()
 	cfg := config.Default()
 	cfg.Image = "ubuntu:24.04"
@@ -277,9 +314,10 @@ func TestHostRunnerFailsFastWhenRuntimeSpaceIsInsufficient(t *testing.T) {
 	}
 
 	workspacePrepared := false
+	var runtimeDir string
 	runner := HostRunner{
-		RuntimeDir: tempDir,
-		RuntimeFreeBytes: func(string) (uint64, error) {
+		RuntimeFreeBytes: func(path string) (uint64, error) {
+			runtimeDir = path
 			return 512 * 1024 * 1024, nil
 		},
 		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
@@ -301,6 +339,65 @@ func TestHostRunnerFailsFastWhenRuntimeSpaceIsInsufficient(t *testing.T) {
 	}
 	if workspacePrepared {
 		t.Fatal("workspace preparer should not run when runtime storage is insufficient")
+	}
+	if runtimeDir == "" {
+		t.Fatal("runtime free-space check should capture a runtime dir")
+	}
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Fatalf("runtime dir %q should be removed after disk-pressure failure, stat err=%v", runtimeDir, err)
+	}
+	controlDirs, err := filepath.Glob(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "keel", "vm-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(controlDirs) != 0 {
+		t.Fatalf("control dirs = %#v, want none after disk-pressure failure", controlDirs)
+	}
+}
+
+func TestHostRunnerCleansUpEphemeralRuntimeDirWhenFeaturePreparationFails(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(tempDir, "run"))
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	cfg.Features = []config.FeatureConfig{{Name: "docker"}}
+	writeCachedRootfsForHostRunnerTest(t, cfg.ImageCacheDir, cfg.Image)
+
+	var runtimeDir string
+	var controlDir string
+	runner := HostRunner{
+		RuntimeFreeBytes: func(string) (uint64, error) {
+			return ^uint64(0), nil
+		},
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		GuestAssets: stubGuestAssets,
+		PrepareFeatures: func(rootfsPath string, _ []config.FeatureConfig) error {
+			runtimeDir = filepath.Dir(rootfsPath)
+			return errors.New("feature prep failed")
+		},
+	}
+
+	_, err := runner.prepareAssets(context.Background(), cfg, nopProgressReporter{})
+	if err == nil || !strings.Contains(err.Error(), "feature prep failed") {
+		t.Fatalf("prepareAssets() error = %v, want feature prep failure", err)
+	}
+	if runtimeDir == "" {
+		t.Fatal("runtime dir should be captured")
+	}
+	controlDir = filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "keel")
+	entries, err := filepath.Glob(filepath.Join(controlDir, "vm-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("control dirs under %q = %#v, want none", controlDir, entries)
+	}
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Fatalf("runtime dir %q should be removed after feature prep failure, stat err=%v", runtimeDir, err)
 	}
 }
 
@@ -1258,6 +1355,54 @@ func TestHostRunnerRemovesArtifactsFromExplicitRuntimeDir(t *testing.T) {
 	}
 }
 
+func TestHostRunnerRemovesArtifactsFromExplicitRuntimeDirWhenRunFails(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	writeCachedRootfsForHostRunnerTest(t, cfg.ImageCacheDir, cfg.Image)
+
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		GuestAssets: stubGuestAssets,
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			if err := os.WriteFile(opts.ImagePath, []byte("workspace"), 0o644); err != nil {
+				return workspace.PrepareResult{}, err
+			}
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return machineRunnerFunc(func(context.Context) error {
+				return errors.New("vm failed")
+			})
+		},
+	}
+
+	err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}})
+	if err == nil || !strings.Contains(err.Error(), "vm failed") {
+		t.Fatalf("Run() error = %v, want vm failure", err)
+	}
+	if _, err := os.Stat(tempDir); err != nil {
+		t.Fatalf("runtime dir %q should remain, stat err=%v", tempDir, err)
+	}
+	for _, artifact := range []string{
+		filepath.Join(tempDir, "rootfs.ext4"),
+		filepath.Join(tempDir, "workspace.ext4"),
+		filepath.Join(tempDir, "bootmeta.ext4"),
+		filepath.Join(tempDir, "firecracker.sock"),
+		filepath.Join(tempDir, "firecracker.vsock"),
+		filepath.Join(tempDir, "logs", "firecracker.log"),
+	} {
+		if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+			t.Fatalf("artifact %q should be removed after failed run, stat err=%v", artifact, err)
+		}
+	}
+}
+
 func TestHostRunnerSyncsWorkspaceAfterCommandExit(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := config.Default()
@@ -1364,6 +1509,43 @@ func TestHostRunnerPrintsNetworkSummaryAfterShutdown(t *testing.T) {
 	}
 	if !strings.Contains(output, "tcp  github.com:443 policy=denied count=1") {
 		t.Fatalf("stderr = %q, want tcp summary entry", output)
+	}
+}
+
+func TestHostRunnerStopsVMServicesWhenMachineRunFails(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Image = "ubuntu:24.04"
+	cfg.ImageCacheDir = tempDir
+	cfg.Workspace.Mount = t.TempDir()
+	writeCachedRootfsForHostRunnerTest(t, cfg.ImageCacheDir, cfg.Image)
+
+	var stopCalls int
+	runner := HostRunner{
+		RuntimeDir: tempDir,
+		EnsureKernel: func(context.Context, config.KernelConfig) (string, error) {
+			return filepath.Join(tempDir, "vmlinux"), nil
+		},
+		GuestAssets: stubGuestAssets,
+		WorkspacePreparer: func(opts workspace.PrepareOptions) (workspace.PrepareResult, error) {
+			return workspace.PrepareResult{ImagePath: opts.ImagePath, SizeBytes: 4096}, nil
+		},
+		ServiceStarter: func(context.Context, config.Config, vm.RuntimeAssets) (func(), *network.Summary, error) {
+			return func() { stopCalls++ }, network.NewSummary(), nil
+		},
+		MachineFactory: func(_ config.Config, _ vm.RuntimeAssets) machineRunner {
+			return machineRunnerFunc(func(context.Context) error {
+				return errors.New("machine failed")
+			})
+		},
+	}
+
+	err := runner.Run(context.Background(), RunRequest{Config: cfg, Command: []string{"/bin/sh"}})
+	if err == nil || !strings.Contains(err.Error(), "machine failed") {
+		t.Fatalf("Run() error = %v, want machine failure", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("service stop calls = %d, want 1", stopCalls)
 	}
 }
 
@@ -1608,6 +1790,29 @@ func TestHostRunnerStartServicesStartsDNSAndTCPProxies(t *testing.T) {
 	}
 }
 
+func TestHostRunnerStartVMServicesStopClosesListeners(t *testing.T) {
+	dnsListener := newBlockingListener()
+	tcpListener := newBlockingListener()
+	listeners := map[uint32]net.Listener{
+		3053: dnsListener,
+		3128: tcpListener,
+	}
+	instance := &stubHypervisorVM{
+		listen: func(port uint32) (net.Listener, error) {
+			return listeners[port], nil
+		},
+	}
+
+	stop, _, err := (HostRunner{}).startVMServices(context.Background(), config.Default(), instance)
+	if err != nil {
+		t.Fatalf("startVMServices() error = %v", err)
+	}
+	stop()
+
+	assertListenerClosed(t, "dns", dnsListener.closed)
+	assertListenerClosed(t, "tcp", tcpListener.closed)
+}
+
 type stubMachineRunner struct{}
 
 func (stubMachineRunner) Run(context.Context) error {
@@ -1643,13 +1848,19 @@ func (r *recordingProgressReporter) Stop() {
 }
 
 type stubHypervisorVM struct {
+	start         func(context.Context) error
 	listen        func(uint32) (net.Listener, error)
 	listenedPorts []uint32
 }
 
-func (*stubHypervisorVM) Start(context.Context) error { return nil }
-func (*stubHypervisorVM) Stop(context.Context) error  { return nil }
-func (*stubHypervisorVM) Wait(context.Context) error  { return nil }
+func (v *stubHypervisorVM) Start(ctx context.Context) error {
+	if v.start != nil {
+		return v.start(ctx)
+	}
+	return nil
+}
+func (*stubHypervisorVM) Stop(context.Context) error { return nil }
+func (*stubHypervisorVM) Wait(context.Context) error { return nil }
 func (*stubHypervisorVM) VSockConnect(uint32) (net.Conn, error) {
 	server, client := net.Pipe()
 	go server.Close()
@@ -1665,6 +1876,45 @@ func (v *stubHypervisorVM) VSockListen(port uint32) (net.Listener, error) {
 }
 
 var _ hypervisor.VM = (*stubHypervisorVM)(nil)
+
+type blockingListener struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newBlockingListener() *blockingListener {
+	return &blockingListener{closed: make(chan struct{})}
+}
+
+func (l *blockingListener) Accept() (net.Conn, error) {
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *blockingListener) Close() error {
+	l.once.Do(func() {
+		close(l.closed)
+	})
+	return nil
+}
+
+func (*blockingListener) Addr() net.Addr {
+	return stubNetAddr("vsock")
+}
+
+type stubNetAddr string
+
+func (a stubNetAddr) Network() string { return string(a) }
+func (a stubNetAddr) String() string  { return string(a) }
+
+func assertListenerClosed(t *testing.T, name string, closed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatalf("%s listener was not closed", name)
+	}
+}
 
 type capturePTYInputVM struct {
 	mu    sync.Mutex

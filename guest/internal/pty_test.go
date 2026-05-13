@@ -108,6 +108,38 @@ func TestWriteStartupFailureSendsMessageAndExitFrame(t *testing.T) {
 	}
 }
 
+func TestWriteCommandExitSendsCodeAndReturnsNil(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() {
+		_ = server.Close()
+		_ = client.Close()
+	}()
+
+	waitErr := exec.Command("sh", "-c", "exit 42").Run()
+	if waitErr == nil {
+		t.Fatal("test command unexpectedly succeeded")
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- writeCommandExit(server, waitErr)
+	}()
+
+	frame, err := vsock.ReadFrame(client)
+	if err != nil {
+		t.Fatalf("ReadFrame(exit) error = %v", err)
+	}
+	if got, want := frame.Type, vsock.MessageExit; got != want {
+		t.Fatalf("exit frame type = %d, want %d", got, want)
+	}
+	if got, want := frame.Code, byte(42); got != want {
+		t.Fatalf("exit code = %d, want %d", got, want)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("writeCommandExit() error = %v", err)
+	}
+}
+
 func TestStartupExitCodeMapsCommandNotFoundTo127(t *testing.T) {
 	if got, want := startupExitCode(exec.ErrNotFound), byte(127); got != want {
 		t.Fatalf("startupExitCode(exec.ErrNotFound) = %d, want %d", got, want)

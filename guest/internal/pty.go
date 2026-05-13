@@ -106,10 +106,14 @@ func ServePTY(command []string, cwd string, env []string, process *ProcessConfig
 	if err := <-readErr; err != nil && !isClosedConn(err) && !errors.Is(err, syscall.EIO) {
 		return err
 	}
+	return writeCommandExit(conn, waitErr)
+}
+
+func writeCommandExit(conn net.Conn, waitErr error) error {
 	if err := writeExitFrame(conn, exitCode(waitErr)); err != nil && !isClosedConn(err) {
 		return err
 	}
-	return waitErr
+	return nil
 }
 
 func configureCommandCredential(cmd *exec.Cmd, process *ProcessConfig, cgroupFD int) {

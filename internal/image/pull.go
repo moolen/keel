@@ -145,7 +145,11 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 			return PullResult{}, fmt.Errorf("write image tarball: %w", err)
 		}
 	}
-	if err := writeImageDigest(layout.DigestPath, img); err != nil {
+	digest, err := p.cacheDigest(ctx, ref, img)
+	if err != nil {
+		return PullResult{}, err
+	}
+	if err := writeDigest(layout.DigestPath, digest); err != nil {
 		return PullResult{}, err
 	}
 
@@ -225,6 +229,23 @@ func (p Puller) shouldRefreshCache(ctx context.Context, layout CacheLayout, ref 
 		return false, nil //nolint:nilerr
 	}
 	return strings.TrimSpace(string(data)) != strings.TrimSpace(remoteDigest), nil
+}
+
+func (p Puller) cacheDigest(ctx context.Context, ref string, img v1.Image) (string, error) {
+	if !referenceUsesDigest(ref) {
+		resolveDigest := p.ResolveDigest
+		if resolveDigest == nil {
+			resolveDigest = resolveRemoteDigest
+		}
+		if digest, err := resolveDigest(ctx, ref); err == nil && strings.TrimSpace(digest) != "" {
+			return strings.TrimSpace(digest), nil
+		}
+	}
+	digest, err := img.Digest()
+	if err != nil {
+		return "", fmt.Errorf("compute image digest: %w", err)
+	}
+	return digest.String(), nil
 }
 
 func (p Puller) reportProgress(update PullProgress) {
@@ -319,7 +340,11 @@ func writeImageDigest(path string, img v1.Image) error {
 	if err != nil {
 		return fmt.Errorf("compute image digest: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(digest.String()+"\n"), 0o644); err != nil {
+	return writeDigest(path, digest.String())
+}
+
+func writeDigest(path, digest string) error {
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(digest)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write image digest: %w", err)
 	}
 	return nil

@@ -195,6 +195,54 @@ func TestPullAndCacheReturnsCachedLayoutWithoutFetching(t *testing.T) {
 	}
 }
 
+func TestPullAndCacheStoresComparableMutableTagDigest(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for pull tests")
+	}
+
+	img := testImage(t, map[string]string{"etc/issue": "keel\n"})
+	cacheDir := t.TempDir()
+	fetchCalls := 0
+	puller := Puller{
+		Fetch: func(context.Context, string) (v1.Image, error) {
+			fetchCalls++
+			return img, nil
+		},
+		ResolveDigest: func(context.Context, string) (string, error) {
+			return "sha256:remote-index", nil
+		},
+	}
+
+	first, err := puller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:main")
+	if err != nil {
+		t.Fatalf("first PullAndCache() error = %v", err)
+	}
+	before, err := os.Stat(first.Layout.RootfsPath)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", first.Layout.RootfsPath, err)
+	}
+
+	second, err := puller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:main")
+	if err != nil {
+		t.Fatalf("second PullAndCache() error = %v", err)
+	}
+	after, err := os.Stat(second.Layout.RootfsPath)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", second.Layout.RootfsPath, err)
+	}
+	if fetchCalls != 1 {
+		t.Fatalf("fetchCalls = %d, want 1", fetchCalls)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Fatalf("cached rootfs was rewritten: before=%s after=%s", before.ModTime(), after.ModTime())
+	}
+	if data, err := os.ReadFile(second.Layout.DigestPath); err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", second.Layout.DigestPath, err)
+	} else if strings.TrimSpace(string(data)) != "sha256:remote-index" {
+		t.Fatalf("digest metadata = %q, want remote digest", strings.TrimSpace(string(data)))
+	}
+}
+
 func TestPullAndCacheRebuildsLegacyCacheFromCachedOCI(t *testing.T) {
 	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
 		t.Skip("mkfs.ext4 is required for pull tests")

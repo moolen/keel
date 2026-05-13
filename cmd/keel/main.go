@@ -5,18 +5,24 @@ import (
 	"errors"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/moolen/keel/internal/cli"
 	"github.com/moolen/keel/internal/config"
 )
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	cmd := cli.NewRootCommand(cli.Dependencies{
 		Runner: cli.HostRunner{},
 		LoadConfig: func(_ context.Context, opts config.LoadOptions) (config.Config, error) {
 			return config.Load(opts)
 		},
 	})
+	cmd.SetContext(ctx)
 	if err := cmd.Execute(); err != nil {
 		log.Print(err)
 		os.Exit(exitCodeForError(err))

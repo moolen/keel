@@ -22,6 +22,9 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 
 	runner := Runner{
 		LookupPath: func(file string) (string, error) {
+			if file == "iptables-legacy" || file == "ip6tables-legacy" {
+				return "/usr/sbin/" + file, nil
+			}
 			return "/usr/local/bin/" + file, nil
 		},
 		MkdirAll: func(path string, _ os.FileMode) error {
@@ -94,6 +97,12 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 			t.Fatalf("daemon.json missing %q in %s", want, text)
 		}
 	}
+	if got := writes["/run/keel-docker-bin/iptables"]; !strings.Contains(got, "exec /usr/sbin/iptables-legacy") {
+		t.Fatalf("iptables wrapper = %q, want legacy iptables exec", got)
+	}
+	if got := writes["/run/keel-docker-bin/ip6tables"]; !strings.Contains(got, "exec /usr/sbin/ip6tables-legacy") {
+		t.Fatalf("ip6tables wrapper = %q, want legacy ip6tables exec", got)
+	}
 	if strings.Contains(text, `"bridge":"`) {
 		t.Fatalf("daemon.json should not set explicit bridge device: %s", text)
 	}
@@ -115,10 +124,19 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 	if !containsEnv(startedEnv, "DOCKER_CONFIG=/etc/docker/client") {
 		t.Fatalf("StartProcess env missing DOCKER_CONFIG: %#v", startedEnv)
 	}
+	if !containsEnv(startedEnv, "DOCKER_INSECURE_NO_IPTABLES_RAW=1") {
+		t.Fatalf("StartProcess env missing raw-table compatibility flag: %#v", startedEnv)
+	}
+	if !containsEnvPrefix(startedEnv, "PATH=/run/keel-docker-bin:"+tempDir) {
+		t.Fatalf("StartProcess env missing legacy iptables PATH prefix: %#v", startedEnv)
+	}
 	if !containsEnv(daemonEnv, "DOCKER_CONFIG=/etc/docker/client") {
 		t.Fatalf("WaitForDaemon env missing DOCKER_CONFIG: %#v", daemonEnv)
 	}
-	if !containsEnv(daemonEnv, "PATH="+tempDir) {
+	if !containsEnv(daemonEnv, "DOCKER_INSECURE_NO_IPTABLES_RAW=1") {
+		t.Fatalf("WaitForDaemon env missing raw-table compatibility flag: %#v", daemonEnv)
+	}
+	if !containsEnvPrefix(daemonEnv, "PATH=/run/keel-docker-bin:"+tempDir) {
 		t.Fatalf("WaitForDaemon env missing PATH override: %#v", daemonEnv)
 	}
 	if !reflect.DeepEqual(removedPaths, []string{"/var/run/docker.sock", "/var/run/docker.pid"}) {
@@ -131,8 +149,8 @@ func TestRunConfiguredStartsDockerDaemon(t *testing.T) {
 		t.Fatal("expected WaitForDaemon to be called")
 	}
 	if !reflect.DeepEqual(ranCommands, [][]string{
-		{"/usr/local/bin/iptables", "-t", "nat", "-I", "PREROUTING", "1", "-s", "172.17.0.0/16", "-p", "tcp", "-d", "172.17.0.1", "--dport", "3128", "-j", "RETURN"},
-		{"/usr/local/bin/iptables", "-t", "nat", "-A", "PREROUTING", "-s", "172.17.0.0/16", "-p", "tcp", "-j", "REDIRECT", "--to-ports", "3128"},
+		{"/usr/sbin/iptables-legacy", "-t", "nat", "-I", "PREROUTING", "1", "-s", "172.17.0.0/16", "-p", "tcp", "-d", "172.17.0.1", "--dport", "3128", "-j", "RETURN"},
+		{"/usr/sbin/iptables-legacy", "-t", "nat", "-A", "PREROUTING", "-s", "172.17.0.0/16", "-p", "tcp", "-j", "REDIRECT", "--to-ports", "3128"},
 	}) {
 		t.Fatalf("RunCommand calls = %#v", ranCommands)
 	}
@@ -201,6 +219,15 @@ func TestDockerFeatureWritesCACertWhenConfigured(t *testing.T) {
 func containsEnv(env []string, want string) bool {
 	for _, entry := range env {
 		if entry == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsEnvPrefix(env []string, want string) bool {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, want) {
 			return true
 		}
 	}
