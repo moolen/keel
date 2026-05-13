@@ -304,9 +304,19 @@ func TestLoadRejectsInvalidNetworkConfig(t *testing.T) {
 			want: "port",
 		},
 		{
+			name: "endpoint invalid host",
+			body: "network:\n  endpoints:\n    - host: https://api.github.com\n      port: 443\n",
+			want: "host",
+		},
+		{
 			name: "endpoint http without required mitm",
 			body: "network:\n  endpoints:\n    - host: api.github.com\n      port: 443\n      http:\n        default: deny\n",
 			want: "mitm.required",
+		},
+		{
+			name: "endpoint http missing default",
+			body: "network:\n  endpoints:\n    - host: api.github.com\n      port: 443\n      mitm:\n        required: true\n      http:\n        rules:\n          - action: allow\n",
+			want: "default",
 		},
 		{
 			name: "endpoint invalid http default",

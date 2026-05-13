@@ -350,6 +350,9 @@ func validateNetwork(network NetworkConfig) error {
 		if strings.TrimSpace(endpoint.Host) == "" {
 			return errors.New("network.endpoints.host is required")
 		}
+		if !validEndpointHost(endpoint.Host) {
+			return errors.New("network.endpoints.host must be a DNS host or leading wildcard host")
+		}
 		if endpoint.Port <= 0 || endpoint.Port > 65535 {
 			return errors.New("network.endpoints.port must be between 1 and 65535")
 		}
@@ -377,9 +380,38 @@ func validateNetwork(network NetworkConfig) error {
 	return nil
 }
 
+func validEndpointHost(host string) bool {
+	if host != strings.TrimSpace(host) || host == "" {
+		return false
+	}
+	if strings.ContainsAny(host, " \t\r\n/") || strings.Contains(host, "://") {
+		return false
+	}
+	if strings.HasPrefix(host, "*.") {
+		host = strings.TrimPrefix(host, "*.")
+	} else if strings.Contains(host, "*") {
+		return false
+	}
+	if host == "" {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" {
+			return false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
 func validateEndpointHTTP(http EndpointHTTPConfig) error {
 	switch http.Default {
-	case "", "allow", "deny":
+	case "allow", "deny":
 	default:
 		return errors.New("network.endpoints.http.default must be allow or deny")
 	}
