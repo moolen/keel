@@ -52,8 +52,7 @@ type NetworkConfig struct {
 	IPRules   []IPRuleConfig  `yaml:"ip_rules"`
 	MITM      MITMConfig      `yaml:"mitm"`
 
-	legacyNetworkConfig `yaml:",inline"`
-	LogDecisions        bool `yaml:"-"`
+	LogDecisions bool `yaml:"-"`
 }
 
 type EndpointConfig struct {
@@ -90,8 +89,6 @@ type IPRuleConfig struct {
 
 type MITMConfig struct {
 	CA MITMCAConfig `yaml:"ca"`
-
-	legacyMITMConfig `yaml:",inline"`
 }
 
 type MITMCAConfig struct {
@@ -99,56 +96,6 @@ type MITMCAConfig struct {
 	InstallSystem bool   `yaml:"install_system"`
 	InstallDocker bool   `yaml:"install_docker"`
 }
-
-type legacyNetworkConfig struct {
-	DenyIfNoSNI bool             `yaml:"deny_if_no_sni"`
-	DNS         legacyDNSConfig  `yaml:"dns"`
-	TCP         legacyTCPConfig  `yaml:"tcp"`
-	TLS         legacyTLSConfig  `yaml:"tls"`
-	HTTP        legacyHTTPConfig `yaml:"http"`
-}
-
-type legacyDNSConfig struct {
-	Allowed []string `yaml:"allowed"`
-	Denied  []string `yaml:"denied"`
-}
-
-type legacyTCPConfig struct {
-	AllowedCIDRs []string `yaml:"allowed_cidrs"`
-	DeniedCIDRs  []string `yaml:"denied_cidrs"`
-}
-
-type legacyTLSConfig struct {
-	AllowedSNI []string `yaml:"allowed_sni"`
-	DeniedSNI  []string `yaml:"denied_sni"`
-}
-
-type legacyMITMConfig struct {
-	Enabled         bool             `yaml:"enabled"`
-	Mode            string           `yaml:"mode"`
-	OnUntrustedCert string           `yaml:"on_untrusted_cert"`
-	LogRequests     bool             `yaml:"log_requests"`
-	Bypass          legacyMITMBypass `yaml:"bypass"`
-}
-
-type legacyMITMBypass struct {
-	Hosts []string `yaml:"hosts"`
-	SNI   []string `yaml:"sni"`
-}
-
-type legacyHTTPConfig struct {
-	Default string                 `yaml:"default"`
-	Rules   []legacyHTTPRuleConfig `yaml:"rules"`
-}
-
-type legacyHTTPRuleConfig struct {
-	Action  string   `yaml:"action"`
-	Host    string   `yaml:"host"`
-	Methods []string `yaml:"methods"`
-	Paths   []string `yaml:"paths"`
-}
-
-type HTTPRuleConfig = legacyHTTPRuleConfig
 
 type ProcessConfig struct {
 	UID               int   `yaml:"uid" json:"uid"`

@@ -33,35 +33,20 @@ type mergePresenceWorkspaceConfig struct {
 }
 
 type mergePresenceNetworkConfig struct {
-	Audit       *bool                    `yaml:"audit"`
-	DenyIfNoSNI *bool                    `yaml:"deny_if_no_sni"`
-	MITM        *mergePresenceMITMConfig `yaml:"mitm"`
-	HTTP        *mergePresenceHTTPConfig `yaml:"http"`
+	Audit     *bool                    `yaml:"audit"`
+	Endpoints *[]EndpointConfig        `yaml:"endpoints"`
+	IPRules   *[]IPRuleConfig          `yaml:"ip_rules"`
+	MITM      *mergePresenceMITMConfig `yaml:"mitm"`
 }
 
 type mergePresenceMITMConfig struct {
-	Enabled         *bool                    `yaml:"enabled"`
-	Mode            *string                  `yaml:"mode"`
-	OnUntrustedCert *string                  `yaml:"on_untrusted_cert"`
-	LogRequests     *bool                    `yaml:"log_requests"`
-	CA              *mergePresenceMITMCA     `yaml:"ca"`
-	Bypass          *mergePresenceMITMBypass `yaml:"bypass"`
+	CA *mergePresenceMITMCA `yaml:"ca"`
 }
 
 type mergePresenceMITMCA struct {
 	Name          *string `yaml:"name"`
 	InstallSystem *bool   `yaml:"install_system"`
 	InstallDocker *bool   `yaml:"install_docker"`
-}
-
-type mergePresenceMITMBypass struct {
-	Hosts *[]string `yaml:"hosts"`
-	SNI   *[]string `yaml:"sni"`
-}
-
-type mergePresenceHTTPConfig struct {
-	Default *string           `yaml:"default"`
-	Rules   *[]HTTPRuleConfig `yaml:"rules"`
 }
 
 type mergePresenceProcessConfig struct {
@@ -196,40 +181,13 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 	if presence.Network.Audit != nil {
 		dst.Network.Audit = src.Network.Audit
 	}
-	if presence.Network.DenyIfNoSNI != nil {
-		dst.Network.DenyIfNoSNI = src.Network.DenyIfNoSNI
+	if presence.Network.Endpoints != nil {
+		dst.Network.Endpoints = append([]EndpointConfig(nil), src.Network.Endpoints...)
 	}
-	if len(src.Network.DNS.Allowed) > 0 {
-		dst.Network.DNS.Allowed = append([]string(nil), src.Network.DNS.Allowed...)
-	}
-	if len(src.Network.DNS.Denied) > 0 {
-		dst.Network.DNS.Denied = append([]string(nil), src.Network.DNS.Denied...)
-	}
-	if len(src.Network.TCP.AllowedCIDRs) > 0 {
-		dst.Network.TCP.AllowedCIDRs = append([]string(nil), src.Network.TCP.AllowedCIDRs...)
-	}
-	if len(src.Network.TCP.DeniedCIDRs) > 0 {
-		dst.Network.TCP.DeniedCIDRs = append([]string(nil), src.Network.TCP.DeniedCIDRs...)
-	}
-	if len(src.Network.TLS.AllowedSNI) > 0 {
-		dst.Network.TLS.AllowedSNI = append([]string(nil), src.Network.TLS.AllowedSNI...)
-	}
-	if len(src.Network.TLS.DeniedSNI) > 0 {
-		dst.Network.TLS.DeniedSNI = append([]string(nil), src.Network.TLS.DeniedSNI...)
+	if presence.Network.IPRules != nil {
+		dst.Network.IPRules = append([]IPRuleConfig(nil), src.Network.IPRules...)
 	}
 	if presence.Network.MITM != nil {
-		if presence.Network.MITM.Mode != nil {
-			dst.Network.MITM.Mode = src.Network.MITM.Mode
-		}
-		if presence.Network.MITM.Enabled != nil {
-			dst.Network.MITM.Enabled = src.Network.MITM.Enabled
-		}
-		if presence.Network.MITM.OnUntrustedCert != nil {
-			dst.Network.MITM.OnUntrustedCert = src.Network.MITM.OnUntrustedCert
-		}
-		if presence.Network.MITM.LogRequests != nil {
-			dst.Network.MITM.LogRequests = src.Network.MITM.LogRequests
-		}
 		if presence.Network.MITM.CA != nil {
 			if presence.Network.MITM.CA.Name != nil {
 				dst.Network.MITM.CA.Name = src.Network.MITM.CA.Name
@@ -240,22 +198,6 @@ func mergeConfig(dst *Config, src Config, presence mergePresenceConfig) {
 			if presence.Network.MITM.CA.InstallDocker != nil {
 				dst.Network.MITM.CA.InstallDocker = src.Network.MITM.CA.InstallDocker
 			}
-		}
-		if presence.Network.MITM.Bypass != nil {
-			if presence.Network.MITM.Bypass.Hosts != nil {
-				dst.Network.MITM.Bypass.Hosts = append([]string{}, src.Network.MITM.Bypass.Hosts...)
-			}
-			if presence.Network.MITM.Bypass.SNI != nil {
-				dst.Network.MITM.Bypass.SNI = append([]string{}, src.Network.MITM.Bypass.SNI...)
-			}
-		}
-	}
-	if presence.Network.HTTP != nil {
-		if presence.Network.HTTP.Default != nil {
-			dst.Network.HTTP.Default = src.Network.HTTP.Default
-		}
-		if presence.Network.HTTP.Rules != nil {
-			dst.Network.HTTP.Rules = append([]HTTPRuleConfig{}, src.Network.HTTP.Rules...)
 		}
 	}
 	if len(src.Features) > 0 {
