@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,9 +21,10 @@ import (
 func TestTCPProxyAllowsCorrelatedDestination(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
 	summary := NewSummary()
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
-
-	engine := NewPolicyEngine(PolicyConfig{}, tracker)
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{Host: "api.github.com", Port: 80}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 
 	clientSide, proxySide := net.Pipe()
 	defer clientSide.Close()
@@ -153,14 +155,14 @@ func TestTCPProxyDeniesUncorrelatedDestination(t *testing.T) {
 func TestTCPProxyDeniesMismatchedTLSSNI(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
 	summary := NewSummary()
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
-
 	engine := NewPolicyEngine(PolicyConfig{
-		TLS: RuleSet{
-			Allowed: []string{"*.github.com"},
-		},
-		DenyIfNoSNI: true,
+		Endpoints: []EndpointRule{{
+			Host:            "api.github.com",
+			Port:            443,
+			RequireSNIMatch: true,
+		}},
 	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 
 	clientSide, proxySide := net.Pipe()
 	defer clientSide.Close()
@@ -202,20 +204,20 @@ func TestTCPProxyDeniesMismatchedTLSSNI(t *testing.T) {
 	if dialed {
 		t.Fatal("dialer was called for mismatched TLS SNI")
 	}
-	assertSummaryReportContains(t, summary, "tcp  evil.github.com:443 policy=denied count=1")
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:443 policy=denied count=1")
 }
 
 func TestTCPProxyPeeksTLSSNIOnNonStandardPort(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
 	summary := NewSummary()
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
-
 	engine := NewPolicyEngine(PolicyConfig{
-		TLS: RuleSet{
-			Allowed: []string{"*.github.com"},
-		},
-		DenyIfNoSNI: true,
+		Endpoints: []EndpointRule{{
+			Host:            "api.github.com",
+			Port:            8443,
+			RequireSNIMatch: true,
+		}},
 	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 
 	clientSide, proxySide := net.Pipe()
 	defer clientSide.Close()
@@ -258,7 +260,57 @@ func TestTCPProxyPeeksTLSSNIOnNonStandardPort(t *testing.T) {
 	if dialed {
 		t.Fatal("dialer was called for mismatched TLS SNI on non-standard port")
 	}
-	assertSummaryReportContains(t, summary, "tcp  evil.github.com:8443 policy=denied count=1")
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:8443 policy=denied count=1")
+}
+
+func TestTCPProxyDeniesRequiredMITMWhenClientHelloCannotBeParsed(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{
+			Host:         "api.github.com",
+			Port:         443,
+			MITMRequired: true,
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
+
+	summary := NewSummary()
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+	var dialed bool
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		Now:     func() time.Time { return time.Unix(110, 0) },
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, fmt.Errorf("unexpected dial")
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proxy.handleConn(context.Background(), proxySide) }()
+
+	if err := writeDestinationHeader(clientSide, "203.0.113.10:443"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	if _, err := clientSide.Write([]byte("n")); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+	_ = clientSide.Close()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handleConn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+	if dialed {
+		t.Fatal("dialer was called for required MITM without TLS inspection")
+	}
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:443 policy=denied count=1")
 }
 
 func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
@@ -306,7 +358,7 @@ func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
 	if !strings.HasPrefix(got, "\r\x1b[2K[keel:tcp] ") {
 		t.Fatalf("events = %q, want line-clearing keel tcp log", got)
 	}
-	if !strings.Contains(got, "would_deny destination=198.51.100.25:80 sni= rule=default reason=tcp destination not correlated") {
+	if !strings.Contains(got, "would_deny destination=198.51.100.25:80 sni= rule=default reason=tcp destination not authorized") {
 		t.Fatalf("events = %q, want would_deny audit log", got)
 	}
 }
@@ -338,9 +390,11 @@ func TestTCPProxyHandlesConcurrentHTTPRequests(t *testing.T) {
 	}
 
 	tracker := NewTracker(60 * time.Second)
-	tracker.Observe("upstream.test", upstreamIP, 30*time.Second, time.Unix(100, 0))
 	summary := NewSummary()
-	engine := NewPolicyEngine(PolicyConfig{}, tracker)
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{Host: "upstream.test", Port: mustPortInt(t, upstreamPort)}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "upstream.test", upstreamIP.String())
 
 	var dialCount atomic.Int64
 	proxy := TCPProxy{
@@ -453,9 +507,11 @@ func TestTCPProxyHandlesConcurrentRawStreams(t *testing.T) {
 	}
 
 	tracker := NewTracker(60 * time.Second)
-	tracker.Observe("tunnel.test", upstreamIP, 30*time.Second, time.Unix(100, 0))
 	summary := NewSummary()
-	engine := NewPolicyEngine(PolicyConfig{}, tracker)
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{Host: "tunnel.test", Port: mustPortInt(t, upstreamPort)}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "tunnel.test", upstreamIP.String())
 
 	var dialCount atomic.Int64
 	proxy := TCPProxy{
@@ -563,4 +619,24 @@ func mustClientHelloBytesForTCP(t *testing.T, serverName string) []byte {
 	}
 
 	return nil
+}
+
+func observeEndpointDNS(t *testing.T, engine *PolicyEngine, host, ip string) {
+	t.Helper()
+
+	_, auths := engine.EvaluateDNS(host)
+	if len(auths) == 0 {
+		t.Fatalf("EvaluateDNS(%q) produced no endpoint authorizations", host)
+	}
+	engine.ObserveDNS(host, []net.IP{net.ParseIP(ip)}, 30*time.Second, time.Unix(100, 0), auths)
+}
+
+func mustPortInt(t *testing.T, port string) int {
+	t.Helper()
+
+	value, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("Atoi(%q) error = %v", port, err)
+	}
+	return value
 }

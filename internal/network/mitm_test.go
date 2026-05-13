@@ -566,13 +566,23 @@ func TestTCPProxyUsesMITMForEligibleTLSFlows(t *testing.T) {
 	}
 
 	tracker := NewTracker(60 * time.Second)
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{
+			Host:            "api.github.com",
+			Port:            443,
+			RequireSNIMatch: true,
+			MITMRequired:    true,
+			HTTP: HTTPPolicyConfig{
+				Default: "deny",
+				Rules:   []HTTPRule{{Action: "allow", Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/*"}}},
+			},
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 
 	summary := NewSummary()
 	proxy := TCPProxy{
-		Policy: NewPolicyEngine(PolicyConfig{
-			TLS: RuleSet{Allowed: []string{"*.github.com"}},
-		}, tracker),
+		Policy:  engine,
 		Summary: summary,
 		Now: func() time.Time {
 			return time.Unix(110, 0)
@@ -650,17 +660,14 @@ func TestDNSProxyAllowsDeniedDomainInAuditMode(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
 	summary := NewSummary()
 	engine := NewPolicyEngine(PolicyConfig{
-		Audit: true,
-		DNS: RuleSet{
-			Denied: []string{"gist.github.com"},
-		},
+		Audit:     true,
+		Endpoints: []EndpointRule{{Host: "api.github.com", Port: 443}},
 	}, tracker)
 	resolver := &stubResolver{
 		response: mustDNSResponse(t, "gist.github.com.", "140.82.112.7", 30),
 	}
 	proxy := DNSProxy{
 		Policy:   engine,
-		Tracker:  tracker,
 		Resolver: resolver,
 		Summary:  summary,
 		Now:      func() time.Time { return time.Unix(100, 0) },
@@ -770,11 +777,21 @@ func TestTCPProxyUsesMITMForPlainHTTPFlows(t *testing.T) {
 	defer upstreamHTTP.Close()
 
 	tracker := NewTracker(60 * time.Second)
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{
+			Host: "api.github.com",
+			Port: 80,
+			HTTP: HTTPPolicyConfig{
+				Default: "deny",
+				Rules:   []HTTPRule{{Action: "allow", Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/*"}}},
+			},
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 
 	summary := NewSummary()
 	proxy := TCPProxy{
-		Policy:  NewPolicyEngine(PolicyConfig{}, tracker),
+		Policy:  engine,
 		Summary: summary,
 		Now: func() time.Time {
 			return time.Unix(110, 0)
@@ -832,9 +849,11 @@ func TestTCPProxyUsesMITMForPlainHTTPFlows(t *testing.T) {
 
 func TestTCPProxyBypassesMITMForPlainHTTPBypassHost(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
 
-	engine := NewPolicyEngine(PolicyConfig{}, tracker)
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{Host: "api.github.com", Port: 80}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 	summary := NewSummary()
 
 	clientSide, proxySide := net.Pipe()
@@ -863,11 +882,12 @@ func TestTCPProxyBypassesMITMForPlainHTTPBypassHost(t *testing.T) {
 		errCh <- proxy.handleConn(context.Background(), proxySide)
 	}()
 
+	request := "GET / HTTP/1.1\r\nHost: api.github.com\r\nConnection: close\r\n\r\n"
 	upstreamPayload := make(chan []byte, 1)
 	go func() {
 		defer upstreamServer.Close()
-		buf := make([]byte, 1024)
-		n, err := upstreamServer.Read(buf)
+		buf := make([]byte, len(request))
+		n, err := io.ReadFull(upstreamServer, buf)
 		if err != nil {
 			t.Errorf("upstream read error = %v", err)
 			return
@@ -879,7 +899,6 @@ func TestTCPProxyBypassesMITMForPlainHTTPBypassHost(t *testing.T) {
 	if err := writeDestinationHeader(clientSide, "203.0.113.10:80"); err != nil {
 		t.Fatalf("writeDestinationHeader() error = %v", err)
 	}
-	request := "GET / HTTP/1.1\r\nHost: api.github.com\r\nConnection: close\r\n\r\n"
 	if _, err := io.WriteString(clientSide, request); err != nil {
 		t.Fatalf("client write error = %v", err)
 	}
@@ -912,13 +931,11 @@ func TestTCPProxyBypassesMITMForPlainHTTPBypassHost(t *testing.T) {
 
 func TestTCPProxyFallsBackToRawTunnelWhenMITMDisabled(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
 
 	engine := NewPolicyEngine(PolicyConfig{
-		TLS: RuleSet{
-			Allowed: []string{"*.github.com"},
-		},
+		Endpoints: []EndpointRule{{Host: "api.github.com", Port: 443}},
 	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 	summary := NewSummary()
 
 	clientSide, proxySide := net.Pipe()
@@ -1001,13 +1018,11 @@ func TestTCPProxyFallsBackToRawTunnelWhenMITMDisabled(t *testing.T) {
 
 func TestTCPProxyBypassesMITMForConfiguredSNI(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
 
 	engine := NewPolicyEngine(PolicyConfig{
-		TLS: RuleSet{
-			Allowed: []string{"*.github.com"},
-		},
+		Endpoints: []EndpointRule{{Host: "api.github.com", Port: 443}},
 	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 	summary := NewSummary()
 
 	clientSide, proxySide := net.Pipe()
@@ -1094,13 +1109,15 @@ func TestTCPProxyBypassesMITMForConfiguredSNI(t *testing.T) {
 
 func TestTCPProxyDeniesWhenMITMInspectionFails(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
 
 	engine := NewPolicyEngine(PolicyConfig{
-		TLS: RuleSet{
-			Allowed: []string{"*.github.com"},
-		},
+		Endpoints: []EndpointRule{{
+			Host:         "api.github.com",
+			Port:         443,
+			MITMRequired: true,
+		}},
 	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 	summary := NewSummary()
 
 	clientSide, proxySide := net.Pipe()
@@ -1152,13 +1169,11 @@ func TestTCPProxyDeniesWhenMITMInspectionFails(t *testing.T) {
 
 func TestTCPProxyAllowsIncompleteTLSClientHelloToTunnel(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
-	tracker.Observe("api.github.com", net.ParseIP("203.0.113.10"), 30*time.Second, time.Unix(100, 0))
 
 	engine := NewPolicyEngine(PolicyConfig{
-		TLS: RuleSet{
-			Allowed: []string{"*.github.com"},
-		},
+		Endpoints: []EndpointRule{{Host: "api.github.com", Port: 443}},
 	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
 	summary := NewSummary()
 
 	clientSide, proxySide := net.Pipe()

@@ -96,17 +96,20 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 		now = p.Now()
 	}
 	decision := p.Policy.EvaluateTCP(ip, port, sni, isTLS, now)
-	if decision.Allowed && p.MITM != nil && p.MITM.Enabled && tlsInspectionRequired(preface, sni, inspectErr) {
-		decision = Decision{Reason: "mitm inspection required but client hello parsing failed", Rule: "mitm"}
+	if decision.Allowed && decision.MITMRequired {
+		if !isTLS || tlsInspectionRequired(preface, sni, inspectErr) || p.MITM == nil || !p.MITM.Enabled {
+			decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
+		}
 	}
-	p.Summary.RecordTCP(summaryHost(p.Policy, ip, sni, now), port, decision)
+	p.Summary.RecordTCP(summaryHostForDecision(p.Policy, decision, ip, port, sni, now), port, decision)
 	if !decision.Allowed {
 		p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
 		return nil
 	}
 	p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
 
-	if p.MITM != nil && !isTLS && p.MITM.Enabled {
+	mitm := mitmForDecision(p.MITM, decision)
+	if mitm != nil && !isTLS && mitm.Enabled && hasHTTPPolicyConfig(decision.HTTP) {
 		connToRead := conn
 		if len(preface) > 0 {
 			connToRead = &prefixedConn{Conn: conn, prefix: bytes.NewReader(preface)}
@@ -115,8 +118,8 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 		if err != nil {
 			return err
 		}
-		if isHTTP && !matchesAnyHostPattern(host, p.MITM.BypassHosts) {
-			return p.MITM.HandleHTTP(ctx, &prefixedConn{
+		if isHTTP && !matchesAnyHostPattern(host, mitm.BypassHosts) {
+			return mitm.HandleHTTP(ctx, &prefixedConn{
 				Conn:   conn,
 				prefix: bytes.NewReader(httpPreface),
 			}, destination)
@@ -124,8 +127,8 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 		preface = httpPreface
 	}
 
-	if p.MITM != nil && isTLS && len(preface) > 0 && sni != "" && p.MITM.EnabledFor(sni) {
-		return p.MITM.HandleTLS(ctx, &prefixedConn{
+	if decision.MITMRequired && isTLS && len(preface) > 0 && sni != "" {
+		return mitm.HandleTLS(ctx, &prefixedConn{
 			Conn:   conn,
 			prefix: bytes.NewReader(preface),
 		}, sni, destination)
@@ -152,13 +155,33 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	return bridgeTCP(conn, upstream)
 }
 
-func summaryHost(policy *PolicyEngine, ip net.IP, sni string, now time.Time) string {
+func mitmForDecision(mitm *MITMProxy, decision Decision) *MITMProxy {
+	if mitm == nil || !hasHTTPPolicyConfig(decision.HTTP) {
+		return mitm
+	}
+	next := *mitm
+	next.Policy = NewHTTPPolicy(decision.HTTP)
+	return &next
+}
+
+func hasHTTPPolicyConfig(cfg HTTPPolicyConfig) bool {
+	return strings.TrimSpace(cfg.Default) != "" || len(cfg.Rules) > 0 || cfg.Audit
+}
+
+func summaryHostForDecision(policy *PolicyEngine, decision Decision, ip net.IP, port int, sni string, now time.Time) string {
+	if decision.EndpointHost != "" {
+		return decision.EndpointHost
+	}
+	return summaryHost(policy, ip, port, sni, now)
+}
+
+func summaryHost(policy *PolicyEngine, ip net.IP, port int, sni string, now time.Time) string {
 	if name := normalizeName(sni); name != "" {
 		return name
 	}
 	if policy != nil && policy.tracker != nil {
-		if domains := policy.tracker.Domains(ip, now); len(domains) > 0 {
-			return domains[0]
+		if host := policy.tracker.Host(ip, port, now); host != "" {
+			return host
 		}
 	}
 	if ip != nil {
