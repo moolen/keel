@@ -30,6 +30,14 @@ type EventWriter interface {
 	Write([]byte) (int, error)
 }
 
+func StartUnixNetworkServices(ctx context.Context, cfg config.Config, assets vm.RuntimeAssets) (func(), *network.Summary, error) {
+	stop, summary, err := (NetworkServiceFactory{}).StartUnix(ctx, cfg, assets)
+	if stop == nil {
+		return nil, summary, err
+	}
+	return func() { stop() }, summary, err
+}
+
 func (f NetworkServiceFactory) Build(cfg config.Config) (NetworkServices, error) {
 	tracker := network.NewTracker(60 * time.Second)
 	summary := network.NewSummary()

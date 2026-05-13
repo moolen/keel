@@ -162,7 +162,7 @@ func (p AssetPreparer) Prepare(ctx context.Context, cfg config.Config, progress 
 	cleanupOnError := true
 	defer func() {
 		if cleanupOnError {
-			cleanupRuntimeAssets(assets)
+			CleanupRuntimeAssets(assets)
 		}
 	}()
 
@@ -545,7 +545,7 @@ func loadGuestAgentAssets(execPath string, readFile func(string) ([]byte, error)
 	)
 }
 
-func cleanupRuntimeAssets(assets vm.RuntimeAssets) {
+func CleanupRuntimeAssets(assets vm.RuntimeAssets) {
 	if assets.CleanupDir && assets.RuntimeDir != "" {
 		_ = os.RemoveAll(assets.RuntimeDir)
 		if assets.ControlDir != "" && assets.ControlDir != assets.RuntimeDir {

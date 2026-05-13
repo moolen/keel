@@ -13,7 +13,6 @@ import (
 
 	"github.com/moolen/keel/internal/config"
 	"github.com/moolen/keel/internal/hypervisor"
-	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/network"
 	keelpty "github.com/moolen/keel/internal/pty"
 	keelruntime "github.com/moolen/keel/internal/runtime"
@@ -21,7 +20,6 @@ import (
 	"github.com/moolen/keel/internal/vm"
 	"github.com/moolen/keel/internal/volume"
 	"github.com/moolen/keel/internal/workspace"
-	pkgboot "github.com/moolen/keel/pkg/bootmanifest"
 )
 
 type machineRunner interface {
@@ -29,23 +27,14 @@ type machineRunner interface {
 }
 
 type HostRunner struct {
-	RuntimeDir        string
-	RuntimeFreeBytes  func(string) (uint64, error)
-	EnsureKernel      func(context.Context, config.KernelConfig) (string, error)
-	GuestAssets       func() (image.GuestAgentAssets, error)
-	WorkspacePreparer func(workspace.PrepareOptions) (workspace.PrepareResult, error)
-	SyncWorkspace     func(workspace.ImageSyncOptions) (workspace.SyncResult, error)
-	VolumePreparer    func(volume.PrepareOptions) (volume.PrepareResult, error)
-	SyncVolume        func(volume.SyncOptions) error
-	ResolveEnv        func(config.EnvConfig) (map[string]string, error)
-	WriteBootManifest func(string, pkgboot.Manifest) error
-	PullImage         func(context.Context, string, string) (image.PullResult, error)
-	PrepareAssets     func(context.Context, config.Config, keelruntime.Progress) (vm.RuntimeAssets, error)
-	MachineFactory    func(config.Config, vm.RuntimeAssets) machineRunner
-	PrepareFeatures   func(string, []config.FeatureConfig) error
-	ServiceStarter    func(context.Context, config.Config, vm.RuntimeAssets) (func(), *network.Summary, error)
-	ProgressFactory   func(io.Writer, int) (progressReporter, error)
-	ProgressEnabled   func(io.Writer) bool
+	PrepareAssets   func(context.Context, config.Config, keelruntime.Progress) (vm.RuntimeAssets, error)
+	ServiceStarter  func(context.Context, config.Config, vm.RuntimeAssets) (func(), *network.Summary, error)
+	MachineFactory  func(config.Config, vm.RuntimeAssets) machineRunner
+	SyncWorkspace   func(workspace.ImageSyncOptions) (workspace.SyncResult, error)
+	SyncVolume      func(volume.SyncOptions) error
+	ResolveEnv      func(config.EnvConfig) (map[string]string, error)
+	ProgressFactory func(io.Writer, int) (progressReporter, error)
+	ProgressEnabled func(io.Writer) bool
 }
 
 const startupPhaseTotal = 10
@@ -56,45 +45,6 @@ func startupPhase(index int, title, detail string) startupStep {
 		Total:  startupPhaseTotal,
 		Title:  title,
 		Detail: detail,
-	}
-}
-
-func kernelProgressStep(update vm.KernelProgress) startupStep {
-	step := startupPhase(3, "ensuring kernel", "resolving guest kernel image")
-	switch {
-	case update.Total > 0:
-		return step.WithProgress(update.Current, update.Total, fmt.Sprintf("%s (%s / %s)", update.Phase, formatBytes(update.Current), formatBytes(update.Total)))
-	case update.Current > 0:
-		return step.Complete(update.Phase)
-	case update.Phase != "":
-		step.Detail = update.Phase
-	}
-	return step
-}
-
-func imagePullProgressStep(update image.PullProgress) startupStep {
-	step := startupPhase(4, "pulling oci image", "resolving cached rootfs and image layers")
-	switch update.Phase {
-	case image.PullPhaseResolve:
-		return step.WithProgress(5, 100, update.Phase.String())
-	case image.PullPhaseDownload:
-		current := int64(10)
-		if update.Total > 0 {
-			current += (update.Current * 70) / update.Total
-			return step.WithProgress(current, 100, fmt.Sprintf("%s (%s / %s)", update.Phase.String(), formatBytes(update.Current), formatBytes(update.Total)))
-		}
-		return step.WithProgress(current, 100, update.Phase.String())
-	case image.PullPhaseExtract:
-		return step.WithProgress(85, 100, update.Phase.String())
-	case image.PullPhaseBuildRootfs:
-		return step.WithProgress(95, 100, update.Phase.String())
-	case image.PullPhaseReady:
-		return step.Complete(update.Phase.String())
-	default:
-		if update.Phase != "" {
-			step.Detail = update.Phase.String()
-		}
-		return step
 	}
 }
 
@@ -132,13 +82,13 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	if err != nil {
 		return err
 	}
-	defer r.cleanupRuntimeAssets(assets)
+	defer keelruntime.CleanupRuntimeAssets(assets)
 	req.Config = cfg
 	factory := r.MachineFactory
 	if factory != nil {
 		startServices := r.ServiceStarter
 		if startServices == nil {
-			startServices = defaultNetworkServiceStarter
+			startServices = keelruntime.StartUnixNetworkServices
 		}
 		progress.Step(startupPhase(9, "starting vm services", "starting dns and tcp policy proxies"))
 		stopServices, summary, err := startServices(ctx, cfg, assets)
@@ -291,31 +241,12 @@ func (r HostRunner) printNetworkSummary(req RunRequest, summary *network.Summary
 	_ = summary.WriteReport(stderr)
 }
 
-func defaultNetworkServiceStarter(ctx context.Context, cfg config.Config, assets vm.RuntimeAssets) (func(), *network.Summary, error) {
-	stop, summary, err := (keelruntime.NetworkServiceFactory{}).StartUnix(ctx, cfg, assets)
-	if stop == nil {
-		return nil, summary, err
-	}
-	return func() { stop() }, summary, err
-}
-
 func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progress progressReporter) (vm.RuntimeAssets, error) {
 	assetProgress := cliRuntimeProgress{reporter: progress}
 	if r.PrepareAssets != nil {
 		return r.PrepareAssets(ctx, cfg, assetProgress)
 	}
-	preparer := keelruntime.AssetPreparer{
-		RuntimeDir:        r.RuntimeDir,
-		RuntimeFreeBytes:  r.RuntimeFreeBytes,
-		EnsureKernel:      r.EnsureKernel,
-		GuestAssets:       r.GuestAssets,
-		WorkspacePreparer: r.WorkspacePreparer,
-		VolumePreparer:    r.VolumePreparer,
-		WriteBootManifest: r.WriteBootManifest,
-		PullImage:         r.PullImage,
-		PrepareFeatures:   r.PrepareFeatures,
-	}
-	return preparer.Prepare(ctx, cfg, assetProgress)
+	return (keelruntime.AssetPreparer{}).Prepare(ctx, cfg, assetProgress)
 }
 
 type cliRuntimeProgress struct {
@@ -392,39 +323,4 @@ func (r HostRunner) syncWorkspace(req RunRequest, assets vm.RuntimeAssets) error
 		SyncWorkspace: r.SyncWorkspace,
 		SyncVolume:    r.SyncVolume,
 	}, assets)
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func (r HostRunner) cleanupRuntimeAssets(assets vm.RuntimeAssets) {
-	if assets.CleanupDir && assets.RuntimeDir != "" {
-		_ = os.RemoveAll(assets.RuntimeDir)
-		if assets.ControlDir != "" && assets.ControlDir != assets.RuntimeDir {
-			_ = os.RemoveAll(assets.ControlDir)
-		}
-		return
-	}
-	for _, path := range []string{
-		assets.RootfsPath,
-		assets.WorkspacePath,
-		assets.MetadataPath,
-		assets.SocketPath,
-		assets.VSockPath,
-		assets.VSockPath + "_3053",
-		assets.VSockPath + "_3128",
-		assets.LogPath,
-	} {
-		if path == "" {
-			continue
-		}
-		_ = os.RemoveAll(path)
-	}
-	for _, item := range assets.Volumes {
-		_ = os.RemoveAll(item.ImagePath)
-	}
 }
