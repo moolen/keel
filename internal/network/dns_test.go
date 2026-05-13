@@ -30,14 +30,27 @@ func (r *stubResolver) Exchange(_ context.Context, msg *dns.Msg) (*dns.Msg, erro
 }
 
 func TestDNSProxyAllowsAndTracksAnswers(t *testing.T) {
-	tracker := NewTracker(60 * time.Second)
+	tracker := NewTracker(0)
 	summary := NewSummary()
 	engine := NewPolicyEngine(PolicyConfig{
-		DNS: RuleSet{Allowed: []string{"*.github.com"}},
+		Endpoints: []EndpointRule{{
+			Host:            "*.github.com",
+			Port:            443,
+			RequireSNIMatch: true,
+		}},
 	}, tracker)
 	resolver := &stubResolver{
 		response: mustDNSResponse(t, "api.github.com.", "140.82.112.6", 30),
 	}
+	resolver.response.Answer = append(resolver.response.Answer, &dns.AAAA{
+		Hdr: dns.RR_Header{
+			Name:   "api.github.com.",
+			Rrtype: dns.TypeAAAA,
+			Class:  dns.ClassINET,
+			Ttl:    90,
+		},
+		AAAA: net.ParseIP("2606:50c0:8000::153"),
+	})
 	proxy := DNSProxy{
 		Policy:   engine,
 		Tracker:  tracker,
@@ -59,22 +72,28 @@ func TestDNSProxyAllowsAndTracksAnswers(t *testing.T) {
 		t.Fatalf("resolver calls = %d, want 1", resolver.calls)
 	}
 
-	domains := tracker.Domains(net.ParseIP("140.82.112.6"), time.Unix(110, 0))
-	if len(domains) != 1 || domains[0] != "api.github.com" {
-		t.Fatalf("tracked domains = %#v", domains)
+	authorizations := tracker.Authorizations(net.ParseIP("140.82.112.6"), 443, time.Unix(110, 0))
+	if len(authorizations) != 1 {
+		t.Fatalf("tracked authorizations = %#v, want one", authorizations)
+	}
+	if authorizations[0].Host != "api.github.com" || authorizations[0].Port != 443 {
+		t.Fatalf("tracked authorization = %+v, want api.github.com:443", authorizations[0])
+	}
+	if authorizations := tracker.Authorizations(net.ParseIP("140.82.112.6"), 443, time.Unix(131, 0)); len(authorizations) != 0 {
+		t.Fatalf("expired A authorizations = %#v, want none", authorizations)
+	}
+	if authorizations := tracker.Authorizations(net.ParseIP("2606:50c0:8000::153"), 443, time.Unix(131, 0)); len(authorizations) != 1 {
+		t.Fatalf("AAAA authorizations after A expiry = %#v, want one", authorizations)
 	}
 
 	assertSummaryReportContains(t, summary, "dns  api.github.com:53 policy=allowed count=1")
 }
 
-func TestDNSProxyDeniesBlockedDomain(t *testing.T) {
+func TestDNSProxyDeniesEndpointMiss(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
 	summary := NewSummary()
 	engine := NewPolicyEngine(PolicyConfig{
-		DNS: RuleSet{
-			Allowed: []string{"*.github.com"},
-			Denied:  []string{"gist.github.com"},
-		},
+		Endpoints: []EndpointRule{{Host: "api.github.com", Port: 443}},
 	}, tracker)
 	resolver := &stubResolver{
 		response: mustDNSResponse(t, "gist.github.com.", "140.82.112.7", 30),
@@ -105,10 +124,8 @@ func TestDNSProxyLogsWouldDenyInAuditMode(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
 	summary := NewSummary()
 	engine := NewPolicyEngine(PolicyConfig{
-		Audit: true,
-		DNS: RuleSet{
-			Denied: []string{"gist.github.com"},
-		},
+		Audit:     true,
+		Endpoints: []EndpointRule{{Host: "api.github.com", Port: 443}},
 	}, tracker)
 	resolver := &stubResolver{
 		response: mustDNSResponse(t, "gist.github.com.", "140.82.112.7", 30),
@@ -135,7 +152,7 @@ func TestDNSProxyLogsWouldDenyInAuditMode(t *testing.T) {
 	if !strings.HasPrefix(got, "\r\x1b[2K[keel:dns] ") {
 		t.Fatalf("events = %q, want line-clearing keel dns log", got)
 	}
-	if !strings.Contains(got, "would_deny domain=gist.github.com answers=1 rule=gist.github.com reason=dns denied") {
+	if !strings.Contains(got, "would_deny domain=gist.github.com answers=1 rule=default reason=host not covered by endpoint") {
 		t.Fatalf("events = %q, want would_deny audit log", got)
 	}
 }

@@ -32,7 +32,7 @@ func (p DNSProxy) HandleQuery(ctx context.Context, query *dns.Msg) (*dns.Msg, er
 	}
 
 	domain := normalizeName(query.Question[0].Name)
-	decision := p.Policy.EvaluateDNS(query.Question[0].Name)
+	decision, authorizations := p.Policy.EvaluateDNS(query.Question[0].Name)
 	p.Summary.RecordDNS(domain, decision)
 	if !decision.Allowed {
 		p.Events.Printf("dns", "%s domain=%s rule=%s reason=%s", decisionLabel(decision), domain, decision.Rule, decision.Reason)
@@ -57,20 +57,20 @@ func (p DNSProxy) HandleQuery(ctx context.Context, query *dns.Msg) (*dns.Msg, er
 	if p.Now != nil {
 		now = p.Now()
 	}
-	p.observeAnswers(query.Question[0].Name, reply, now)
+	p.observeAnswers(query.Question[0].Name, reply, now, authorizations)
 	return reply, nil
 }
 
-func (p DNSProxy) observeAnswers(domain string, reply *dns.Msg, now time.Time) {
-	if p.Tracker == nil || reply == nil {
+func (p DNSProxy) observeAnswers(domain string, reply *dns.Msg, now time.Time, authorizations []DNSAuthorization) {
+	if p.Policy == nil || reply == nil {
 		return
 	}
 	for _, answer := range reply.Answer {
 		switch rr := answer.(type) {
 		case *dns.A:
-			p.Tracker.Observe(domain, rr.A, time.Duration(rr.Hdr.Ttl)*time.Second, now)
+			p.Policy.ObserveDNS(domain, []net.IP{rr.A}, time.Duration(rr.Hdr.Ttl)*time.Second, now, authorizations)
 		case *dns.AAAA:
-			p.Tracker.Observe(domain, rr.AAAA, time.Duration(rr.Hdr.Ttl)*time.Second, now)
+			p.Policy.ObserveDNS(domain, []net.IP{rr.AAAA}, time.Duration(rr.Hdr.Ttl)*time.Second, now, authorizations)
 		}
 	}
 }
