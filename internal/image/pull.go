@@ -118,9 +118,9 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 		if err != nil {
 			return PullResult{}, err
 		}
-		progressUpdates := make(chan v1.Update, 32)
-		var progressWG sync.WaitGroup
 		if p.Progress != nil {
+			progressUpdates := make(chan v1.Update, 32)
+			var progressWG sync.WaitGroup
 			progressWG.Add(1)
 			go func() {
 				defer progressWG.Done()
@@ -135,10 +135,12 @@ func (p Puller) PullAndCache(ctx context.Context, cacheDir, ref string) (PullRes
 					})
 				}
 			}()
+			err = tarball.WriteToFile(layout.OCIPath, parsedRef, img, tarball.WithProgress(progressUpdates))
+			close(progressUpdates)
+			progressWG.Wait()
+		} else {
+			err = tarball.WriteToFile(layout.OCIPath, parsedRef, img)
 		}
-		err = tarball.WriteToFile(layout.OCIPath, parsedRef, img, tarball.WithProgress(progressUpdates))
-		close(progressUpdates)
-		progressWG.Wait()
 		if err != nil {
 			return PullResult{}, fmt.Errorf("write image tarball: %w", err)
 		}

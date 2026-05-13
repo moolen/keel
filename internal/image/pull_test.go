@@ -10,8 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
@@ -113,6 +115,39 @@ func TestPullAndCacheReportsProgress(t *testing.T) {
 	}
 	if updates[len(updates)-1].Phase != PullPhaseReady {
 		t.Fatalf("last phase = %q, want %q", updates[len(updates)-1].Phase, PullPhaseReady)
+	}
+}
+
+func TestPullAndCacheWithoutProgressDoesNotBlockImageWrite(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for pull tests")
+	}
+
+	files := make(map[string]string)
+	for i := 0; i < 48; i++ {
+		files[filepath.Join("var/lib/test", strconv.Itoa(i))] = strings.Repeat("keel\n", 8)
+	}
+	img := testImage(t, files)
+	cacheDir := t.TempDir()
+	puller := Puller{
+		Fetch: func(context.Context, string) (v1.Image, error) {
+			return img, nil
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := puller.PullAndCache(context.Background(), cacheDir, "ghcr.io/moolen/keel:test")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("PullAndCache() error = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("PullAndCache() blocked without progress receiver")
 	}
 }
 
