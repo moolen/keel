@@ -254,6 +254,101 @@ network:
 	}
 }
 
+func TestLoadRejectsOldNetworkPolicyFields(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "dns", body: "network:\n  dns:\n    allowed: [api.github.com]\n"},
+		{name: "tcp", body: "network:\n  tcp:\n    allowed_cidrs: [10.0.0.0/8]\n"},
+		{name: "tls", body: "network:\n  tls:\n    allowed_sni: [api.github.com]\n"},
+		{name: "deny_if_no_sni", body: "network:\n  deny_if_no_sni: true\n"},
+		{name: "top_level_http", body: "network:\n  http:\n    default: deny\n"},
+		{name: "mitm_enabled", body: "network:\n  mitm:\n    enabled: true\n"},
+		{name: "mitm_bypass", body: "network:\n  mitm:\n    bypass:\n      hosts: [api.github.com]\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			projectDir := t.TempDir()
+			t.Setenv("HOME", tmpHome)
+			mkdirAll(t, filepath.Join(tmpHome, ".config", "keel"))
+			writeFile(t, filepath.Join(projectDir, "keel.yaml"), tt.body)
+
+			_, err := Load(LoadOptions{WorkingDir: projectDir})
+			if err == nil {
+				t.Fatal("Load() error = nil, want old network field rejection")
+			}
+			if !strings.Contains(err.Error(), "network.endpoints") || !strings.Contains(err.Error(), "network.ip_rules") {
+				t.Fatalf("Load() error = %v, want migration guidance", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidNetworkConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "endpoint missing host",
+			body: "network:\n  endpoints:\n    - port: 443\n",
+			want: "host",
+		},
+		{
+			name: "endpoint invalid port",
+			body: "network:\n  endpoints:\n    - host: api.github.com\n      port: 70000\n",
+			want: "port",
+		},
+		{
+			name: "endpoint http without required mitm",
+			body: "network:\n  endpoints:\n    - host: api.github.com\n      port: 443\n      http:\n        default: deny\n",
+			want: "mitm.required",
+		},
+		{
+			name: "endpoint invalid http default",
+			body: "network:\n  endpoints:\n    - host: api.github.com\n      port: 443\n      mitm:\n        required: true\n      http:\n        default: block\n",
+			want: "allow or deny",
+		},
+		{
+			name: "endpoint invalid http rule action",
+			body: "network:\n  endpoints:\n    - host: api.github.com\n      port: 443\n      mitm:\n        required: true\n      http:\n        rules:\n          - action: block\n",
+			want: "allow or deny",
+		},
+		{
+			name: "ip rule invalid cidr",
+			body: "network:\n  ip_rules:\n    - cidr: 10.20.0.0\n      port: 5432\n",
+			want: "cidr",
+		},
+		{
+			name: "ip rule invalid port",
+			body: "network:\n  ip_rules:\n    - cidr: 10.20.0.0/16\n      port: 0\n",
+			want: "port",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			projectDir := t.TempDir()
+			t.Setenv("HOME", tmpHome)
+			mkdirAll(t, filepath.Join(tmpHome, ".config", "keel"))
+			writeFile(t, filepath.Join(projectDir, "keel.yaml"), tt.body)
+
+			_, err := Load(LoadOptions{WorkingDir: projectDir})
+			if err == nil {
+				t.Fatal("Load() error = nil, want invalid network config rejection")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadNetworkDefaults(t *testing.T) {
 	tmpHome := t.TempDir()
 	projectDir := t.TempDir()

@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,10 +38,22 @@ type mergePresenceNetworkConfig struct {
 	Endpoints *[]EndpointConfig        `yaml:"endpoints"`
 	IPRules   *[]IPRuleConfig          `yaml:"ip_rules"`
 	MITM      *mergePresenceMITMConfig `yaml:"mitm"`
+
+	OldDenyIfNoSNI *bool `yaml:"deny_if_no_sni"`
+	OldDNS         any   `yaml:"dns"`
+	OldTCP         any   `yaml:"tcp"`
+	OldTLS         any   `yaml:"tls"`
+	OldHTTP        any   `yaml:"http"`
 }
 
 type mergePresenceMITMConfig struct {
 	CA *mergePresenceMITMCA `yaml:"ca"`
+
+	OldEnabled         *bool   `yaml:"enabled"`
+	OldMode            *string `yaml:"mode"`
+	OldOnUntrustedCert *string `yaml:"on_untrusted_cert"`
+	OldLogRequests     *bool   `yaml:"log_requests"`
+	OldBypass          any     `yaml:"bypass"`
 }
 
 type mergePresenceMITMCA struct {
@@ -128,8 +141,21 @@ func mergeConfigFile(cfg *Config, path string) error {
 	if err := yaml.Unmarshal(data, &presenceCfg); err != nil {
 		return err
 	}
+	if err := rejectOldNetworkFields(presenceCfg.Network); err != nil {
+		return err
+	}
 
 	mergeConfig(cfg, fileCfg, presenceCfg)
+	return nil
+}
+
+func rejectOldNetworkFields(p mergePresenceNetworkConfig) error {
+	if p.OldDenyIfNoSNI != nil || p.OldDNS != nil || p.OldTCP != nil || p.OldTLS != nil || p.OldHTTP != nil {
+		return errors.New("old network policy fields were removed; migrate to network.endpoints and network.ip_rules")
+	}
+	if p.MITM != nil && (p.MITM.OldEnabled != nil || p.MITM.OldMode != nil || p.MITM.OldOnUntrustedCert != nil || p.MITM.OldLogRequests != nil || p.MITM.OldBypass != nil) {
+		return errors.New("old network MITM fields were removed; migrate policy decisions to network.endpoints and direct IP access to network.ip_rules")
+	}
 	return nil
 }
 
@@ -291,6 +317,9 @@ func validateConfig(cfg Config) error {
 	if err := validateEnv(cfg.Env); err != nil {
 		return err
 	}
+	if err := validateNetwork(cfg.Network); err != nil {
+		return err
+	}
 	for _, volume := range cfg.Volumes {
 		if volume.Source == "" {
 			return errors.New("volume.source is required")
@@ -311,6 +340,54 @@ func validateConfig(cfg Config) error {
 		}
 		if volume.Ownership == "process" && cfg.Process == nil {
 			return errors.New("volume.ownership=process requires process.uid and process.gid")
+		}
+	}
+	return nil
+}
+
+func validateNetwork(network NetworkConfig) error {
+	for _, endpoint := range network.Endpoints {
+		if strings.TrimSpace(endpoint.Host) == "" {
+			return errors.New("network.endpoints.host is required")
+		}
+		if endpoint.Port <= 0 || endpoint.Port > 65535 {
+			return errors.New("network.endpoints.port must be between 1 and 65535")
+		}
+		mitmRequired := endpoint.MITM != nil && endpoint.MITM.Required
+		if endpoint.HTTP != nil && !mitmRequired {
+			return errors.New("network.endpoints.http requires network.endpoints.mitm.required")
+		}
+		if endpoint.HTTP != nil {
+			if err := validateEndpointHTTP(*endpoint.HTTP); err != nil {
+				return err
+			}
+		}
+	}
+	for _, rule := range network.IPRules {
+		if strings.TrimSpace(rule.CIDR) == "" {
+			return errors.New("network.ip_rules.cidr is required")
+		}
+		if _, _, err := net.ParseCIDR(rule.CIDR); err != nil {
+			return errors.New("network.ip_rules.cidr must be a valid CIDR")
+		}
+		if rule.Port <= 0 || rule.Port > 65535 {
+			return errors.New("network.ip_rules.port must be between 1 and 65535")
+		}
+	}
+	return nil
+}
+
+func validateEndpointHTTP(http EndpointHTTPConfig) error {
+	switch http.Default {
+	case "", "allow", "deny":
+	default:
+		return errors.New("network.endpoints.http.default must be allow or deny")
+	}
+	for _, rule := range http.Rules {
+		switch rule.Action {
+		case "allow", "deny":
+		default:
+			return errors.New("network.endpoints.http.rules.action must be allow or deny")
 		}
 	}
 	return nil
