@@ -594,7 +594,7 @@ func TestTCPProxyUsesMITMForEligibleTLSFlows(t *testing.T) {
 		MITM: &MITMProxy{
 			Enabled: true,
 			CA:      proxyCA,
-			Policy:  NewHTTPPolicy(HTTPPolicyConfig{Default: "deny", Rules: []HTTPRule{{Action: "allow", Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/*"}}}}),
+			Policy:  NewHTTPPolicy(HTTPPolicyConfig{Default: "deny"}),
 			Summary: summary,
 			TLSClientConfig: &tls.Config{
 				RootCAs: roots,
@@ -779,8 +779,9 @@ func TestTCPProxyUsesMITMForPlainHTTPFlows(t *testing.T) {
 	tracker := NewTracker(60 * time.Second)
 	engine := NewPolicyEngine(PolicyConfig{
 		Endpoints: []EndpointRule{{
-			Host: "api.github.com",
-			Port: 80,
+			Host:         "api.github.com",
+			Port:         80,
+			MITMRequired: true,
 			HTTP: HTTPPolicyConfig{
 				Default: "deny",
 				Rules:   []HTTPRule{{Action: "allow", Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/*"}}},
@@ -798,7 +799,7 @@ func TestTCPProxyUsesMITMForPlainHTTPFlows(t *testing.T) {
 		},
 		MITM: &MITMProxy{
 			Enabled: true,
-			Policy:  NewHTTPPolicy(HTTPPolicyConfig{Default: "deny", Rules: []HTTPRule{{Action: "allow", Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/*"}}}}),
+			Policy:  NewHTTPPolicy(HTTPPolicyConfig{Default: "deny"}),
 			Summary: summary,
 			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 				return (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, network, upstreamHTTP.Addr().String())

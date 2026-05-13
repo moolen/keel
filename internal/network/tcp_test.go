@@ -364,6 +364,63 @@ func TestTCPProxyDeniesRequiredMITMWhenClientHelloHasNoSNI(t *testing.T) {
 	assertSummaryReportContains(t, summary, "tcp  api.github.com:443 policy=denied count=1")
 }
 
+func TestTCPProxyDeniesRequiredMITMPlaintextWhenNotHTTP(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{
+			Host:         "api.github.com",
+			Port:         80,
+			MITMRequired: true,
+			HTTP: HTTPPolicyConfig{
+				Default: "allow",
+			},
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
+
+	summary := NewSummary()
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+	var dialed bool
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		MITM: &MITMProxy{
+			Enabled: true,
+			Policy:  NewHTTPPolicy(HTTPPolicyConfig{Default: "allow"}),
+		},
+		Now: func() time.Time { return time.Unix(110, 0) },
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, fmt.Errorf("unexpected dial")
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proxy.handleConn(context.Background(), proxySide) }()
+
+	if err := writeDestinationHeader(clientSide, "203.0.113.10:80"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	if _, err := io.WriteString(clientSide, "bogus\r\n\r\n"); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handleConn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+	if dialed {
+		t.Fatal("dialer was called for required MITM plaintext that was not HTTP")
+	}
+	_ = clientSide.Close()
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:80 policy=denied count=1")
+}
+
 func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
 	engine := NewPolicyEngine(PolicyConfig{
 		Audit: true,

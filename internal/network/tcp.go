@@ -96,10 +96,39 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 		now = p.Now()
 	}
 	decision := p.Policy.EvaluateTCP(ip, port, sni, isTLS, now)
+	mitm := mitmForDecision(p.MITM, decision)
+	requiredPlaintextHTTP := false
 	if decision.Allowed && decision.MITMRequired {
-		if !isTLS || sni == "" || tlsInspectionRequired(preface, sni, inspectErr) || p.MITM == nil || !p.MITM.Enabled {
+		if p.MITM == nil || !p.MITM.Enabled {
+			decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
+		} else if isTLS {
+			if sni == "" || tlsInspectionRequired(preface, sni, inspectErr) {
+				decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
+			}
+		} else if hasHTTPPolicyConfig(decision.HTTP) {
+			requiredPlaintextHTTP = true
+		} else {
 			decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
 		}
+	}
+	if decision.Allowed && requiredPlaintextHTTP {
+		connToRead := conn
+		if len(preface) > 0 {
+			connToRead = &prefixedConn{Conn: conn, prefix: bytes.NewReader(preface)}
+		}
+		httpPreface, _, isHTTP, err := readHTTPPreface(connToRead)
+		if err != nil {
+			return err
+		}
+		if isHTTP {
+			p.Summary.RecordTCP(summaryHostForDecision(p.Policy, decision, ip, port, sni, now), port, decision)
+			p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
+			return mitm.HandleHTTP(ctx, &prefixedConn{
+				Conn:   conn,
+				prefix: bytes.NewReader(httpPreface),
+			}, destination)
+		}
+		decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
 	}
 	p.Summary.RecordTCP(summaryHostForDecision(p.Policy, decision, ip, port, sni, now), port, decision)
 	if !decision.Allowed {
@@ -108,7 +137,6 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	}
 	p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
 
-	mitm := mitmForDecision(p.MITM, decision)
 	if mitm != nil && !isTLS && mitm.Enabled && hasHTTPPolicyConfig(decision.HTTP) {
 		connToRead := conn
 		if len(preface) > 0 {
