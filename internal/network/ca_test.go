@@ -382,6 +382,7 @@ func assertCertificateMatchesKey(t *testing.T, certPEM, keyPEM []byte) {
 	block, _ := pem.Decode(keyPEM)
 	if block == nil {
 		t.Fatal("decode private key pem")
+		return
 	}
 
 	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)

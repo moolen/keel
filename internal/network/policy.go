@@ -163,17 +163,6 @@ func (e *PolicyEngine) applyAudit(decision Decision) Decision {
 	return decision
 }
 
-func matchAny(name string, patterns []string) (string, bool) {
-	name = normalizeName(name)
-	for _, pattern := range patterns {
-		pattern = normalizeName(pattern)
-		if matchName(name, pattern) {
-			return pattern, true
-		}
-	}
-	return "", false
-}
-
 func matchName(name, pattern string) bool {
 	ok, err := path.Match(pattern, name)
 	return err == nil && ok

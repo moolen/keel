@@ -13,6 +13,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -25,8 +29,9 @@ func main() {
 	cmd.SetContext(ctx)
 	if err := cmd.Execute(); err != nil {
 		log.Print(err)
-		os.Exit(exitCodeForError(err))
+		return exitCodeForError(err)
 	}
+	return 0
 }
 
 func exitCodeForError(err error) int {

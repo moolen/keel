@@ -130,7 +130,7 @@ func TestNetworkServicesStartUnixStartsDNSAndTCPProxies(t *testing.T) {
 		t.Fatal("StartUnix() summary should not be nil")
 	}
 	for _, socketPath := range []string{vsockPath + "_3053", vsockPath + "_3128"} {
-		conn, err := net.Dial("unix", socketPath)
+		conn, err := (&net.Dialer{}).DialContext(t.Context(), "unix", socketPath)
 		if err != nil {
 			t.Fatalf("dial %s: %v", socketPath, err)
 		}

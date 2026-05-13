@@ -590,13 +590,13 @@ func (s *e2eSuite) testAuditMode(t *testing.T) {
 		"        require_sni_match: true",
 	))
 
-	result := project.run(t, "", sh("curl -fsS https://api.github.com/repos/moolen/keel >/dev/null && echo audit-ok")...)
+	result := project.run(t, "", sh("curl -fsS https://example.com >/dev/null && echo audit-ok")...)
 	result.requireSuccess(t)
 	requireContainsAll(t, result.Stdout, "audit-ok")
 	requireContainsAll(t, result.Stderr,
 		"policy=would_deny",
-		"dns  api.github.com:53 policy=would_deny",
-		"tcp  api.github.com:443 policy=would_deny",
+		"dns  example.com:53 policy=would_deny",
+		"tcp  example.com:443 policy=would_deny",
 	)
 }
 
@@ -899,7 +899,7 @@ func (s *e2eSuite) testParallelNetworkStress(t *testing.T) {
 	project.writeConfig(t, "curlimages/curl:latest", yamlBlock(
 		"network:",
 		"  endpoints:",
-		"    - host: api.github.com",
+		"    - host: example.com",
 		"      port: 443",
 		"      tls:",
 		"        require_sni_match: true",
@@ -914,7 +914,7 @@ set -eu
 seq 1 24 | xargs -P 8 -I{} sh -c '
   env -u HTTP_PROXY -u HTTPS_PROXY -u NO_PROXY -u http_proxy -u https_proxy -u no_proxy \
     curl --noproxy "*" -fsS "https://httpbin.org/get?direct={}" >/dev/null
-  curl -fsS "https://api.github.com/rate_limit?proxy={}" >/dev/null
+  curl -fsS "https://example.com/?proxy={}" >/dev/null
 '
 echo stress-ok
 `)...)
@@ -1181,7 +1181,7 @@ func captureGlobSet(t *testing.T, patterns ...string) map[string]struct{} {
 
 func commandOutput(t *testing.T, name string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(t.Context(), name, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)

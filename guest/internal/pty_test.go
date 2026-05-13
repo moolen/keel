@@ -115,7 +115,7 @@ func TestWriteCommandExitSendsCodeAndReturnsNil(t *testing.T) {
 		_ = client.Close()
 	}()
 
-	waitErr := exec.Command("sh", "-c", "exit 42").Run()
+	waitErr := exec.CommandContext(t.Context(), "sh", "-c", "exit 42").Run()
 	if waitErr == nil {
 		t.Fatal("test command unexpectedly succeeded")
 	}

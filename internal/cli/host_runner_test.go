@@ -31,10 +31,6 @@ import (
 	"github.com/moolen/keel/internal/workspace"
 )
 
-func stubGuestAssets() (image.GuestAgentAssets, error) {
-	return image.GuestAgentAssets{}, nil
-}
-
 func TestHostRunnerDryRunPrintsSummary(t *testing.T) {
 	var stdout bytes.Buffer
 	runner := HostRunner{}

@@ -99,15 +99,16 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	mitm := mitmForDecision(p.MITM, decision)
 	requiredPlaintextHTTP := false
 	if decision.Allowed && decision.MITMRequired {
-		if p.MITM == nil || !p.MITM.Enabled {
+		switch {
+		case p.MITM == nil || !p.MITM.Enabled:
 			decision = p.applyPolicyAudit(Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost})
-		} else if isTLS {
+		case isTLS:
 			if sni == "" || tlsInspectionRequired(preface, sni, inspectErr) {
 				decision = p.applyPolicyAudit(Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost})
 			}
-		} else if hasHTTPPolicyConfig(decision.HTTP) {
+		case hasHTTPPolicyConfig(decision.HTTP):
 			requiredPlaintextHTTP = true
-		} else {
+		default:
 			decision = p.applyPolicyAudit(Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost})
 		}
 	}

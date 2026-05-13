@@ -201,7 +201,7 @@ func (p AssetPreparer) Prepare(ctx context.Context, cfg config.Config, progress 
 	if _, err := preparer(workspace.PrepareOptions{
 		SourceDir:  mountSource,
 		ImagePath:  workspacePath,
-		SizeMB:     maxInt(cfg.Resources.DiskMB, 64),
+		SizeMB:     atLeastMinimumDiskMB(cfg.Resources.DiskMB),
 		Label:      "workspace",
 		Mountpoint: cfg.Workspace.Target,
 	}); err != nil {
@@ -381,8 +381,8 @@ func estimateRuntimeDataRequirement(cachedRootfsPath string, cfg config.Config) 
 	if target := uint64(cfg.Resources.RootDiskMB) * 1024 * 1024; target > required {
 		required = target
 	}
-	required += uint64(maxInt(cfg.Resources.DiskMB, 64)) * 1024 * 1024
-	required += uint64(len(cfg.Volumes)) * uint64(maxInt(cfg.Resources.DiskMB, 64)) * 1024 * 1024
+	required += uint64(atLeastMinimumDiskMB(cfg.Resources.DiskMB)) * 1024 * 1024
+	required += uint64(len(cfg.Volumes)) * uint64(atLeastMinimumDiskMB(cfg.Resources.DiskMB)) * 1024 * 1024
 	required += 256 * 1024 * 1024
 	return required, nil
 }
@@ -424,7 +424,7 @@ func (p AssetPreparer) prepareVolumes(cfg config.Config, runtimeDir string) ([]v
 		result, err := preparer(volume.PrepareOptions{
 			SourcePath: item.Source,
 			ImagePath:  imagePath,
-			SizeMB:     maxInt(cfg.Resources.DiskMB, 64),
+			SizeMB:     atLeastMinimumDiskMB(cfg.Resources.DiskMB),
 			Label:      fmt.Sprintf("volume%d", i),
 		})
 		if err != nil {
@@ -656,11 +656,12 @@ func CleanupRuntimeAssets(assets vm.RuntimeAssets) {
 	}
 }
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
+func atLeastMinimumDiskMB(sizeMB int) int {
+	const minimumDiskMB = 64
+	if sizeMB > minimumDiskMB {
+		return sizeMB
 	}
-	return b
+	return minimumDiskMB
 }
 
 func formatBytes(size int64) string {
