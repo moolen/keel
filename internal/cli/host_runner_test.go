@@ -836,7 +836,11 @@ func TestHostRunnerInjectsMITMGuestTrustAssets(t *testing.T) {
 	cfg.Image = "ubuntu:24.04"
 	cfg.ImageCacheDir = tempDir
 	cfg.Workspace.Mount = t.TempDir()
-	cfg.Network.MITM.Enabled = true
+	cfg.Network.Endpoints = []config.EndpointConfig{{
+		Host: "api.github.com",
+		Port: 443,
+		MITM: &config.EndpointMITMConfig{Required: true},
+	}}
 	cfg.Network.MITM.CA.Name = "keel-local-ca"
 	cfg.Network.MITM.CA.InstallSystem = true
 
@@ -951,7 +955,11 @@ func TestHostRunnerRuntimeConfigInjectsDockerMITMCAPEM(t *testing.T) {
 	t.Setenv("HOME", tempDir)
 
 	cfg := config.Default()
-	cfg.Network.MITM.Enabled = true
+	cfg.Network.Endpoints = []config.EndpointConfig{{
+		Host: "api.github.com",
+		Port: 443,
+		MITM: &config.EndpointMITMConfig{Required: true},
+	}}
 	cfg.Network.MITM.CA.Name = "keel-local-ca"
 	cfg.Network.MITM.CA.InstallDocker = true
 	cfg.Features = []config.FeatureConfig{{
@@ -980,17 +988,23 @@ func TestBuildNetworkServicesEnablesMITMProxy(t *testing.T) {
 	t.Setenv("HOME", tempDir)
 
 	cfg := config.Default()
-	cfg.Network.MITM.Enabled = true
 	cfg.Network.MITM.CA.Name = "keel-local-ca"
-	cfg.Network.HTTP.Default = "deny"
-	cfg.Network.HTTP.Rules = []config.HTTPRuleConfig{{
-		Action:  "allow",
-		Host:    "api.github.com",
-		Methods: []string{"GET"},
-		Paths:   []string{"/repos/*"},
+	cfg.Network.Endpoints = []config.EndpointConfig{{
+		Host: "api.github.com",
+		Port: 443,
+		TLS:  &config.EndpointTLSConfig{RequireSNIMatch: true},
+		MITM: &config.EndpointMITMConfig{Required: true},
+		HTTP: &config.EndpointHTTPConfig{
+			Default: "deny",
+			Rules: []config.EndpointHTTPRuleConfig{{
+				Action:  "allow",
+				Methods: []string{"GET"},
+				Paths:   []string{"/repos/*"},
+			}},
+		},
 	}}
 
-	_, tcpProxy, summary, err := buildNetworkServices(cfg)
+	dnsProxy, tcpProxy, summary, err := buildNetworkServices(cfg)
 	if err != nil {
 		t.Fatalf("buildNetworkServices() error = %v", err)
 	}
@@ -1000,16 +1014,15 @@ func TestBuildNetworkServicesEnablesMITMProxy(t *testing.T) {
 	if tcpProxy.MITM == nil {
 		t.Fatal("expected MITM proxy to be enabled")
 	}
-	if tcpProxy.MITM.Policy == nil {
-		t.Fatal("expected HTTP policy on MITM proxy")
+	decision, auths := dnsProxy.Policy.EvaluateDNS("api.github.com")
+	if !decision.Allowed || len(auths) != 1 || !auths[0].MITMRequired {
+		t.Fatalf("endpoint auth = decision %+v auths %+v", decision, auths)
 	}
-	decision := tcpProxy.MITM.Policy.Evaluate(network.HTTPRequest{
-		Host:   "api.github.com",
-		Method: "GET",
-		Path:   "/repos/123",
-	})
-	if !decision.Allowed {
-		t.Fatalf("http policy decision = %#v, want allowed", decision)
+	if got := auths[0].HTTP.Default; got != "deny" {
+		t.Fatalf("endpoint HTTP default = %q, want deny", got)
+	}
+	if len(auths[0].HTTP.Rules) != 1 || auths[0].HTTP.Rules[0].Host != "" || auths[0].HTTP.Rules[0].Methods[0] != "GET" || auths[0].HTTP.Rules[0].Paths[0] != "/repos/*" {
+		t.Fatalf("endpoint HTTP rules = %+v", auths[0].HTTP.Rules)
 	}
 }
 
@@ -1019,30 +1032,24 @@ func TestBuildNetworkServicesEnablesAuditMode(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Network.Audit = true
-	cfg.Network.DNS.Denied = []string{"gist.github.com"}
-	cfg.Network.HTTP.Default = "deny"
-	cfg.Network.MITM.Enabled = true
 	cfg.Network.MITM.CA.Name = "keel-local-ca"
+	cfg.Network.Endpoints = []config.EndpointConfig{{
+		Host: "api.github.com",
+		Port: 443,
+		MITM: &config.EndpointMITMConfig{Required: true},
+	}}
 
 	dnsProxy, tcpProxy, _, err := buildNetworkServices(cfg)
 	if err != nil {
 		t.Fatalf("buildNetworkServices() error = %v", err)
 	}
 
-	dnsDecision := dnsProxy.Policy.EvaluateDNS("gist.github.com")
+	dnsDecision, _ := dnsProxy.Policy.EvaluateDNS("gist.github.com")
 	if !dnsDecision.Allowed || !dnsDecision.WouldDeny {
 		t.Fatalf("dns audit decision = %+v, want allowed+would_deny", dnsDecision)
 	}
-	if tcpProxy.MITM == nil || tcpProxy.MITM.Policy == nil {
-		t.Fatal("expected MITM proxy with HTTP policy")
-	}
-	httpDecision := tcpProxy.MITM.Policy.Evaluate(network.HTTPRequest{
-		Host:   "api.github.com",
-		Method: "GET",
-		Path:   "/private",
-	})
-	if !httpDecision.Allowed || !httpDecision.WouldDeny {
-		t.Fatalf("http audit decision = %+v, want allowed+would_deny", httpDecision)
+	if tcpProxy.MITM == nil {
+		t.Fatal("expected MITM proxy")
 	}
 }
 

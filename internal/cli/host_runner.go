@@ -734,7 +734,8 @@ func ensureRuntimeRootfsSize(imagePath string, minSizeMB int) error {
 }
 
 func guestTrustAssetsForConfig(cfg config.Config) (image.GuestTrustAssets, error) {
-	if !cfg.Network.MITM.Enabled || !cfg.Network.MITM.CA.InstallSystem {
+	policyCfg := network.PolicyConfig{Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints)}
+	if !policyRequiresMITM(policyCfg) || !cfg.Network.MITM.CA.InstallSystem {
 		return image.GuestTrustAssets{}, nil
 	}
 	ca, err := loadMITMCA(cfg)
@@ -771,7 +772,8 @@ func runtimeFeatureConfig(cfg config.Config) ([]config.FeatureConfig, error) {
 		return nil, nil
 	}
 	features := append([]config.FeatureConfig(nil), cfg.Features...)
-	if !cfg.Network.MITM.Enabled || !cfg.Network.MITM.CA.InstallDocker {
+	policyCfg := network.PolicyConfig{Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints)}
+	if !policyRequiresMITM(policyCfg) || !cfg.Network.MITM.CA.InstallDocker {
 		return features, nil
 	}
 	ca, err := loadMITMCA(cfg)
@@ -796,31 +798,14 @@ func buildNetworkServices(cfg config.Config) (network.DNSProxy, network.TCPProxy
 	tracker := network.NewTracker(60 * time.Second)
 	summary := network.NewSummary()
 	events := network.NewEventLogger(os.Stderr)
-	httpPolicy := network.HTTPPolicyConfig{
-		Default: cfg.Network.HTTP.Default,
-		Rules:   httpRulesFromConfig(cfg.Network.HTTP.Rules),
-		Audit:   cfg.Network.Audit,
+	policyCfg := network.PolicyConfig{
+		Audit:     cfg.Network.Audit,
+		Endpoints: endpointRulesFromConfig(cfg.Network.Endpoints),
+		IPRules:   ipRulesFromConfig(cfg.Network.IPRules),
 	}
-	engine := network.NewPolicyEngine(network.PolicyConfig{
-		Audit: cfg.Network.Audit,
-		DNS: network.RuleSet{
-			Allowed: cfg.Network.DNS.Allowed,
-			Denied:  cfg.Network.DNS.Denied,
-		},
-		TCP: network.CIDRRuleSet{
-			Allowed: cfg.Network.TCP.AllowedCIDRs,
-			Denied:  cfg.Network.TCP.DeniedCIDRs,
-		},
-		TLS: network.RuleSet{
-			Allowed: cfg.Network.TLS.AllowedSNI,
-			Denied:  cfg.Network.TLS.DeniedSNI,
-		},
-		HTTP:        httpPolicy,
-		DenyIfNoSNI: cfg.Network.DenyIfNoSNI,
-	}, tracker)
+	engine := network.NewPolicyEngine(policyCfg, tracker)
 	dnsProxy := network.DNSProxy{
 		Policy:  engine,
-		Tracker: tracker,
 		Summary: summary,
 		Events:  events,
 	}
@@ -829,34 +814,76 @@ func buildNetworkServices(cfg config.Config) (network.DNSProxy, network.TCPProxy
 		Summary: summary,
 		Events:  events,
 	}
-	if cfg.Network.MITM.Enabled {
+	if policyRequiresMITM(policyCfg) {
 		ca, err := loadMITMCA(cfg)
 		if err != nil {
 			return network.DNSProxy{}, network.TCPProxy{}, nil, err
 		}
 		tcpProxy.MITM = &network.MITMProxy{
-			Enabled:     true,
-			BypassHosts: append([]string(nil), cfg.Network.MITM.Bypass.Hosts...),
-			BypassSNI:   append([]string(nil), cfg.Network.MITM.Bypass.SNI...),
-			CA:          ca,
-			Policy:      network.NewHTTPPolicy(httpPolicy),
-			Summary:     summary,
+			Enabled: true,
+			CA:      ca,
+			Summary: summary,
 		}
 	}
 	return dnsProxy, tcpProxy, summary, nil
 }
 
-func httpRulesFromConfig(items []config.HTTPRuleConfig) []network.HTTPRule {
+func endpointRulesFromConfig(items []config.EndpointConfig) []network.EndpointRule {
+	rules := make([]network.EndpointRule, 0, len(items))
+	for _, item := range items {
+		rule := network.EndpointRule{
+			Host:            item.Host,
+			Port:            item.Port,
+			RequireSNIMatch: true,
+		}
+		if item.TLS != nil {
+			rule.RequireSNIMatch = item.TLS.RequireSNIMatch
+		}
+		if item.MITM != nil {
+			rule.MITMRequired = item.MITM.Required
+		}
+		if item.HTTP != nil {
+			rule.HTTP = endpointHTTPPolicyFromConfig(*item.HTTP)
+		}
+		rules = append(rules, rule)
+	}
+	return rules
+}
+
+func endpointHTTPPolicyFromConfig(item config.EndpointHTTPConfig) network.HTTPPolicyConfig {
+	return network.HTTPPolicyConfig{
+		Default: item.Default,
+		Rules:   endpointHTTPRulesFromConfig(item.Rules),
+	}
+}
+
+func endpointHTTPRulesFromConfig(items []config.EndpointHTTPRuleConfig) []network.HTTPRule {
 	rules := make([]network.HTTPRule, 0, len(items))
 	for _, item := range items {
 		rules = append(rules, network.HTTPRule{
 			Action:  item.Action,
-			Host:    item.Host,
 			Methods: append([]string(nil), item.Methods...),
 			Paths:   append([]string(nil), item.Paths...),
 		})
 	}
 	return rules
+}
+
+func ipRulesFromConfig(items []config.IPRuleConfig) []network.IPRule {
+	rules := make([]network.IPRule, 0, len(items))
+	for _, item := range items {
+		rules = append(rules, network.IPRule{CIDR: item.CIDR, Port: item.Port})
+	}
+	return rules
+}
+
+func policyRequiresMITM(cfg network.PolicyConfig) bool {
+	for _, endpoint := range cfg.Endpoints {
+		if endpoint.MITMRequired {
+			return true
+		}
+	}
+	return false
 }
 
 func loadMITMCA(cfg config.Config) (*network.CA, error) {
