@@ -51,9 +51,9 @@ resources:
   disk_mb: 6144
   root_disk_mb: 8192
 network:
-  dns:
-    allowed:
-      - "*.github.com"
+  endpoints:
+    - host: "*.github.com"
+      port: 443
 `)
 
 	writeFile(t, filepath.Join(filepath.Dir(projectDir), "keel.yaml"), `
@@ -62,10 +62,11 @@ workspace:
   target: /src
   sync_back: true
 network:
-  deny_if_no_sni: true
-  dns:
-    denied:
-      - "api.github.com"
+  endpoints:
+    - host: api.github.com
+      port: 443
+      tls:
+        require_sni_match: true
 features:
   - name: docker
     config:
@@ -100,14 +101,11 @@ env:
 	if cfg.Workspace.Target != "/src" || !cfg.Workspace.SyncBack || !cfg.Workspace.SyncConfirm {
 		t.Fatalf("unexpected workspace config: %+v", cfg.Workspace)
 	}
-	if !cfg.Network.DenyIfNoSNI {
-		t.Fatal("cfg.Network.DenyIfNoSNI = false, want true")
+	if len(cfg.Network.Endpoints) != 1 {
+		t.Fatalf("len(cfg.Network.Endpoints) = %d, want 1", len(cfg.Network.Endpoints))
 	}
-	if len(cfg.Network.DNS.Allowed) != 1 || cfg.Network.DNS.Allowed[0] != "*.github.com" {
-		t.Fatalf("unexpected DNS allowed rules: %#v", cfg.Network.DNS.Allowed)
-	}
-	if len(cfg.Network.DNS.Denied) != 1 || cfg.Network.DNS.Denied[0] != "api.github.com" {
-		t.Fatalf("unexpected DNS denied rules: %#v", cfg.Network.DNS.Denied)
+	if ep := cfg.Network.Endpoints[0]; ep.Host != "api.github.com" || ep.Port != 443 || ep.TLS == nil || !ep.TLS.RequireSNIMatch {
+		t.Fatalf("unexpected endpoint config: %+v", ep)
 	}
 	if len(cfg.Features) != 1 || cfg.Features[0].Name != "docker" {
 		t.Fatalf("unexpected features: %#v", cfg.Features)
@@ -152,8 +150,6 @@ workspace:
   sync_back: false
   sync_deletes: false
   sync_confirm: false
-network:
-  deny_if_no_sni: false
 `)
 
 	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
@@ -169,195 +165,79 @@ network:
 	if cfg.Workspace.SyncConfirm {
 		t.Fatalf("cfg.Workspace.SyncConfirm = true, want false")
 	}
-	if cfg.Network.DenyIfNoSNI {
-		t.Fatalf("cfg.Network.DenyIfNoSNI = true, want false")
-	}
 }
 
-func TestLoadParsesMITMAndHTTPPolicy(t *testing.T) {
+func TestLoadParsesEndpointScopedNetworkPolicy(t *testing.T) {
 	tmpHome := t.TempDir()
 	projectDir := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	globalConfig := []byte(`
+	mkdirAll(t, filepath.Join(tmpHome, ".config", "keel"))
+	writeFile(t, filepath.Join(projectDir, "keel.yaml"), `
 network:
+  audit: true
+  endpoints:
+    - host: api.github.com
+      port: 443
+      tls:
+        require_sni_match: true
+      mitm:
+        required: true
+      http:
+        default: deny
+        rules:
+          - action: allow
+            methods: ["GET"]
+            paths: ["/repos/*"]
+    - host: objects.githubusercontent.com
+      port: 443
+      mitm:
+        required: false
+  ip_rules:
+    - cidr: 10.20.0.0/16
+      port: 5432
   mitm:
-    enabled: true
-    mode: optional
-    on_untrusted_cert: deny
-    log_requests: true
     ca:
       name: keel-local-ca
       install_system: true
       install_docker: true
-    bypass:
-      hosts:
-        - registry.npmjs.org
-      sni:
-        - "*.github.com"
 `)
-	if err := os.WriteFile(filepath.Join(tmpHome, ".config", "keel", "config.yaml"), globalConfig, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	projectConfig := []byte(`
-network:
-  http:
-    default: deny
-    rules:
-      - action: allow
-        host: api.github.com
-        methods: ["GET"]
-        paths: ["/repos/*"]
-`)
-	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), projectConfig, 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !cfg.Network.MITM.Enabled {
-		t.Fatal("MITM should be enabled from global config")
+	if !cfg.Network.Audit {
+		t.Fatal("network audit should be true")
 	}
-	if got, want := cfg.Network.MITM.Mode, "optional"; got != want {
-		t.Fatalf("MITM mode = %q, want %q", got, want)
+	if len(cfg.Network.Endpoints) != 2 {
+		t.Fatalf("len(endpoints) = %d, want 2", len(cfg.Network.Endpoints))
 	}
-	if got, want := cfg.Network.MITM.OnUntrustedCert, "deny"; got != want {
-		t.Fatalf("MITM on_untrusted_cert = %q, want %q", got, want)
+	ep := cfg.Network.Endpoints[0]
+	if ep.Host != "api.github.com" || ep.Port != 443 {
+		t.Fatalf("endpoint = %+v, want api.github.com:443", ep)
 	}
-	if !cfg.Network.MITM.LogRequests {
-		t.Fatal("MITM log_requests should be true from global config")
+	if ep.TLS == nil || !ep.TLS.RequireSNIMatch {
+		t.Fatalf("endpoint TLS = %+v, want require_sni_match true", ep.TLS)
 	}
-	if got, want := cfg.Network.MITM.CA.Name, "keel-local-ca"; got != want {
-		t.Fatalf("MITM CA name = %q, want %q", got, want)
+	if ep.MITM == nil || !ep.MITM.Required {
+		t.Fatalf("endpoint MITM = %+v, want required true", ep.MITM)
 	}
-	if !cfg.Network.MITM.CA.InstallSystem || !cfg.Network.MITM.CA.InstallDocker {
-		t.Fatalf("unexpected MITM CA flags: %+v", cfg.Network.MITM.CA)
+	if ep.HTTP == nil || ep.HTTP.Default != "deny" || len(ep.HTTP.Rules) != 1 {
+		t.Fatalf("endpoint HTTP = %+v, want default deny with one rule", ep.HTTP)
 	}
-	if len(cfg.Network.MITM.Bypass.Hosts) != 1 || cfg.Network.MITM.Bypass.Hosts[0] != "registry.npmjs.org" {
-		t.Fatalf("unexpected MITM bypass hosts: %#v", cfg.Network.MITM.Bypass.Hosts)
+	if ep.HTTP.Rules[0].Action != "allow" || ep.HTTP.Rules[0].Methods[0] != "GET" || ep.HTTP.Rules[0].Paths[0] != "/repos/*" {
+		t.Fatalf("endpoint HTTP rule = %+v", ep.HTTP.Rules[0])
 	}
-	if len(cfg.Network.MITM.Bypass.SNI) != 1 || cfg.Network.MITM.Bypass.SNI[0] != "*.github.com" {
-		t.Fatalf("unexpected MITM bypass SNI: %#v", cfg.Network.MITM.Bypass.SNI)
+	if len(cfg.Network.IPRules) != 1 || cfg.Network.IPRules[0].CIDR != "10.20.0.0/16" || cfg.Network.IPRules[0].Port != 5432 {
+		t.Fatalf("ip_rules = %+v", cfg.Network.IPRules)
 	}
-	if got, want := cfg.Network.HTTP.Default, "deny"; got != want {
-		t.Fatalf("HTTP default = %q, want %q", got, want)
-	}
-	if len(cfg.Network.HTTP.Rules) != 1 {
-		t.Fatalf("len(HTTP.Rules) = %d, want 1", len(cfg.Network.HTTP.Rules))
-	}
-	if got, want := cfg.Network.HTTP.Rules[0].Action, "allow"; got != want {
-		t.Fatalf("HTTP rule action = %q, want %q", got, want)
-	}
-	if got, want := cfg.Network.HTTP.Rules[0].Host, "api.github.com"; got != want {
-		t.Fatalf("HTTP rule host = %q, want %q", got, want)
-	}
-	if len(cfg.Network.HTTP.Rules[0].Methods) != 1 || cfg.Network.HTTP.Rules[0].Methods[0] != "GET" {
-		t.Fatalf("unexpected HTTP rule methods: %#v", cfg.Network.HTTP.Rules[0].Methods)
-	}
-	if len(cfg.Network.HTTP.Rules[0].Paths) != 1 || cfg.Network.HTTP.Rules[0].Paths[0] != "/repos/*" {
-		t.Fatalf("unexpected HTTP rule paths: %#v", cfg.Network.HTTP.Rules[0].Paths)
+	if cfg.Network.MITM.CA.Name != "keel-local-ca" || !cfg.Network.MITM.CA.InstallSystem || !cfg.Network.MITM.CA.InstallDocker {
+		t.Fatalf("MITM CA = %+v", cfg.Network.MITM.CA)
 	}
 }
 
-func TestLoadMITMAndHTTPProjectOverridesCanDisableAndClear(t *testing.T) {
-	tmpHome := t.TempDir()
-	projectDir := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	if err := os.MkdirAll(filepath.Join(tmpHome, ".config", "keel"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	globalConfig := []byte(`
-network:
-  mitm:
-    enabled: true
-    mode: required
-    on_untrusted_cert: allow
-    log_requests: true
-    ca:
-      name: keel-local-ca
-      install_system: true
-      install_docker: true
-    bypass:
-      hosts:
-        - registry.npmjs.org
-      sni:
-        - "*.github.com"
-  http:
-    default: allow
-    rules:
-      - action: deny
-        host: api.github.com
-        methods: ["POST"]
-        paths: ["/repos/private/*"]
-`)
-	if err := os.WriteFile(filepath.Join(tmpHome, ".config", "keel", "config.yaml"), globalConfig, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	projectConfig := []byte(`
-network:
-  mitm:
-    enabled: false
-    log_requests: false
-    ca:
-      install_system: false
-      install_docker: false
-    bypass:
-      hosts: []
-      sni:
-        - api.stripe.com
-  http:
-    default: deny
-    rules: []
-`)
-	if err := os.WriteFile(filepath.Join(projectDir, "keel.yaml"), projectConfig, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(LoadOptions{WorkingDir: projectDir})
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if cfg.Network.MITM.Enabled {
-		t.Fatal("MITM enabled should be overridable to false in project config")
-	}
-	if cfg.Network.MITM.LogRequests {
-		t.Fatal("MITM log_requests should be overridable to false in project config")
-	}
-	if got, want := cfg.Network.MITM.Mode, "required"; got != want {
-		t.Fatalf("MITM mode should remain inherited when omitted = %q, want %q", got, want)
-	}
-	if got, want := cfg.Network.MITM.OnUntrustedCert, "allow"; got != want {
-		t.Fatalf("MITM on_untrusted_cert should remain inherited when omitted = %q, want %q", got, want)
-	}
-	if got, want := cfg.Network.MITM.CA.Name, "keel-local-ca"; got != want {
-		t.Fatalf("MITM CA name should remain inherited when omitted = %q, want %q", got, want)
-	}
-	if cfg.Network.MITM.CA.InstallSystem || cfg.Network.MITM.CA.InstallDocker {
-		t.Fatalf("MITM CA flags should be overridable to false: %+v", cfg.Network.MITM.CA)
-	}
-	if len(cfg.Network.MITM.Bypass.Hosts) != 0 {
-		t.Fatalf("MITM bypass hosts should be clearable: %#v", cfg.Network.MITM.Bypass.Hosts)
-	}
-	if len(cfg.Network.MITM.Bypass.SNI) != 1 || cfg.Network.MITM.Bypass.SNI[0] != "api.stripe.com" {
-		t.Fatalf("MITM bypass SNI should be replaceable: %#v", cfg.Network.MITM.Bypass.SNI)
-	}
-	if got, want := cfg.Network.HTTP.Default, "deny"; got != want {
-		t.Fatalf("HTTP default = %q, want %q", got, want)
-	}
-	if len(cfg.Network.HTTP.Rules) != 0 {
-		t.Fatalf("HTTP rules should be clearable: %#v", cfg.Network.HTTP.Rules)
-	}
-}
-
-func TestLoadMITMAndHTTPDefaults(t *testing.T) {
+func TestLoadNetworkDefaults(t *testing.T) {
 	tmpHome := t.TempDir()
 	projectDir := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -373,17 +253,17 @@ func TestLoadMITMAndHTTPDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got, want := cfg.Network.MITM.Mode, "optional"; got != want {
-		t.Fatalf("MITM mode default = %q, want %q", got, want)
-	}
-	if got, want := cfg.Network.MITM.OnUntrustedCert, "deny"; got != want {
-		t.Fatalf("MITM on_untrusted_cert default = %q, want %q", got, want)
-	}
-	if got, want := cfg.Network.HTTP.Default, "deny"; got != want {
-		t.Fatalf("HTTP default = %q, want %q", got, want)
+	if got, want := cfg.Network.Mode, "vsock"; got != want {
+		t.Fatalf("network mode default = %q, want %q", got, want)
 	}
 	if cfg.Network.Audit {
 		t.Fatal("network audit default should be false")
+	}
+	if got, want := cfg.Network.MITM.CA.Name, "keel-local-ca"; got != want {
+		t.Fatalf("MITM CA name default = %q, want %q", got, want)
+	}
+	if !cfg.Network.MITM.CA.InstallSystem || !cfg.Network.MITM.CA.InstallDocker {
+		t.Fatalf("MITM CA install defaults = %+v, want both true", cfg.Network.MITM.CA)
 	}
 }
 

@@ -26,29 +26,12 @@ func Default() Config {
 		Network: NetworkConfig{
 			Mode:  "vsock",
 			Audit: false,
-			TCP: TCPConfig{
-				AllowedCIDRs: []string{},
-				DeniedCIDRs:  []string{},
-			},
-			DNS: DNSConfig{
-				Allowed: []string{},
-				Denied:  []string{},
-			},
-			TLS: TLSConfig{
-				AllowedSNI: []string{},
-				DeniedSNI:  []string{},
-			},
 			MITM: MITMConfig{
-				Mode:            "optional",
-				OnUntrustedCert: "deny",
-				Bypass: MITMBypassConfig{
-					Hosts: []string{},
-					SNI:   []string{},
+				CA: MITMCAConfig{
+					Name:          "keel-local-ca",
+					InstallSystem: true,
+					InstallDocker: true,
 				},
-			},
-			HTTP: HTTPConfig{
-				Default: "deny",
-				Rules:   []HTTPRuleConfig{},
 			},
 		},
 		Env: EnvConfig{

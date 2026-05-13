@@ -46,39 +46,52 @@ type VolumeConfig struct {
 }
 
 type NetworkConfig struct {
-	Mode         string     `yaml:"mode"`
-	Audit        bool       `yaml:"audit"`
-	DenyIfNoSNI  bool       `yaml:"deny_if_no_sni"`
-	DNS          DNSConfig  `yaml:"dns"`
-	TCP          TCPConfig  `yaml:"tcp"`
-	TLS          TLSConfig  `yaml:"tls"`
-	MITM         MITMConfig `yaml:"mitm"`
-	HTTP         HTTPConfig `yaml:"http"`
-	LogDecisions bool       `yaml:"-"`
+	Mode      string           `yaml:"mode"`
+	Audit     bool             `yaml:"audit"`
+	Endpoints []EndpointConfig `yaml:"endpoints"`
+	IPRules   []IPRuleConfig  `yaml:"ip_rules"`
+	MITM      MITMConfig      `yaml:"mitm"`
+
+	legacyNetworkConfig `yaml:",inline"`
+	LogDecisions        bool `yaml:"-"`
 }
 
-type DNSConfig struct {
-	Allowed []string `yaml:"allowed"`
-	Denied  []string `yaml:"denied"`
+type EndpointConfig struct {
+	Host string              `yaml:"host"`
+	Port int                 `yaml:"port"`
+	TLS  *EndpointTLSConfig  `yaml:"tls,omitempty"`
+	MITM *EndpointMITMConfig `yaml:"mitm,omitempty"`
+	HTTP *EndpointHTTPConfig `yaml:"http,omitempty"`
 }
 
-type TCPConfig struct {
-	AllowedCIDRs []string `yaml:"allowed_cidrs"`
-	DeniedCIDRs  []string `yaml:"denied_cidrs"`
+type EndpointTLSConfig struct {
+	RequireSNIMatch bool `yaml:"require_sni_match"`
 }
 
-type TLSConfig struct {
-	AllowedSNI []string `yaml:"allowed_sni"`
-	DeniedSNI  []string `yaml:"denied_sni"`
+type EndpointMITMConfig struct {
+	Required bool `yaml:"required"`
+}
+
+type EndpointHTTPConfig struct {
+	Default string                   `yaml:"default"`
+	Rules   []EndpointHTTPRuleConfig `yaml:"rules"`
+}
+
+type EndpointHTTPRuleConfig struct {
+	Action  string   `yaml:"action"`
+	Methods []string `yaml:"methods"`
+	Paths   []string `yaml:"paths"`
+}
+
+type IPRuleConfig struct {
+	CIDR string `yaml:"cidr"`
+	Port int    `yaml:"port"`
 }
 
 type MITMConfig struct {
-	Enabled         bool             `yaml:"enabled"`
-	Mode            string           `yaml:"mode"`
-	OnUntrustedCert string           `yaml:"on_untrusted_cert"`
-	LogRequests     bool             `yaml:"log_requests"`
-	CA              MITMCAConfig     `yaml:"ca"`
-	Bypass          MITMBypassConfig `yaml:"bypass"`
+	CA MITMCAConfig `yaml:"ca"`
+
+	legacyMITMConfig `yaml:",inline"`
 }
 
 type MITMCAConfig struct {
@@ -87,22 +100,55 @@ type MITMCAConfig struct {
 	InstallDocker bool   `yaml:"install_docker"`
 }
 
-type MITMBypassConfig struct {
+type legacyNetworkConfig struct {
+	DenyIfNoSNI bool             `yaml:"deny_if_no_sni"`
+	DNS         legacyDNSConfig  `yaml:"dns"`
+	TCP         legacyTCPConfig  `yaml:"tcp"`
+	TLS         legacyTLSConfig  `yaml:"tls"`
+	HTTP        legacyHTTPConfig `yaml:"http"`
+}
+
+type legacyDNSConfig struct {
+	Allowed []string `yaml:"allowed"`
+	Denied  []string `yaml:"denied"`
+}
+
+type legacyTCPConfig struct {
+	AllowedCIDRs []string `yaml:"allowed_cidrs"`
+	DeniedCIDRs  []string `yaml:"denied_cidrs"`
+}
+
+type legacyTLSConfig struct {
+	AllowedSNI []string `yaml:"allowed_sni"`
+	DeniedSNI  []string `yaml:"denied_sni"`
+}
+
+type legacyMITMConfig struct {
+	Enabled         bool             `yaml:"enabled"`
+	Mode            string           `yaml:"mode"`
+	OnUntrustedCert string           `yaml:"on_untrusted_cert"`
+	LogRequests     bool             `yaml:"log_requests"`
+	Bypass          legacyMITMBypass `yaml:"bypass"`
+}
+
+type legacyMITMBypass struct {
 	Hosts []string `yaml:"hosts"`
 	SNI   []string `yaml:"sni"`
 }
 
-type HTTPConfig struct {
-	Default string           `yaml:"default"`
-	Rules   []HTTPRuleConfig `yaml:"rules"`
+type legacyHTTPConfig struct {
+	Default string                 `yaml:"default"`
+	Rules   []legacyHTTPRuleConfig `yaml:"rules"`
 }
 
-type HTTPRuleConfig struct {
+type legacyHTTPRuleConfig struct {
 	Action  string   `yaml:"action"`
 	Host    string   `yaml:"host"`
 	Methods []string `yaml:"methods"`
 	Paths   []string `yaml:"paths"`
 }
+
+type HTTPRuleConfig = legacyHTTPRuleConfig
 
 type ProcessConfig struct {
 	UID               int   `yaml:"uid" json:"uid"`
