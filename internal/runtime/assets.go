@@ -185,7 +185,7 @@ func (p AssetPreparer) Prepare(ctx context.Context, cfg config.Config, progress 
 	if err := image.InjectGuestTrust(runtimeRootfsPath, guestTrust); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
-	if err := p.prepareFeatures(runtimeRootfsPath, cfg.Features); err != nil {
+	if err := p.prepareFeatures(runtimeRootfsPath, cfg); err != nil {
 		return vm.RuntimeAssets{}, err
 	}
 
@@ -487,14 +487,18 @@ func cloneStringMap(items map[string]string) map[string]string {
 	return out
 }
 
-func (p AssetPreparer) prepareFeatures(rootfsPath string, configured []config.FeatureConfig) error {
-	if len(configured) == 0 {
+func (p AssetPreparer) prepareFeatures(rootfsPath string, cfg config.Config) error {
+	transportFeatures, err := RuntimeFeatureConfig(cfg)
+	if err != nil {
+		return err
+	}
+	if len(transportFeatures) == 0 {
 		return nil
 	}
 	prepare := p.PrepareFeatures
 	if prepare == nil {
-		registry := keelfeatures.NewRegistry()
-		if err := registry.Register(keelfeatures.NewDockerFeature()); err != nil {
+		registry, err := newFeatureRegistry()
+		if err != nil {
 			return err
 		}
 		prepare = func(rootfsPath string, configured []config.FeatureConfig) error {
@@ -505,13 +509,92 @@ func (p AssetPreparer) prepareFeatures(rootfsPath string, configured []config.Fe
 					Config: feature.Config,
 				})
 			}
-			if err := registry.Validate(items); err != nil {
-				return err
-			}
 			return registry.PrepareRootfs(rootfsPath, items)
 		}
 	}
-	return prepare(rootfsPath, configured)
+	return prepare(rootfsPath, transportFeatures)
+}
+
+func RuntimeFeatureConfig(cfg config.Config) ([]config.FeatureConfig, error) {
+	if len(cfg.Features) == 0 {
+		return nil, nil
+	}
+	registry, err := newFeatureRegistry()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]keelfeatures.ConfiguredFeature, 0, len(cfg.Features))
+	for _, feature := range cfg.Features {
+		items = append(items, keelfeatures.ConfiguredFeature{
+			Name:   feature.Name,
+			Config: feature.Config,
+		})
+	}
+	normalized, err := registry.Normalize(items)
+	if err != nil {
+		return nil, err
+	}
+	if err := addDockerMITMCA(cfg, normalized); err != nil {
+		return nil, err
+	}
+	return normalizedFeatureConfigs(normalized), nil
+}
+
+func newFeatureRegistry() (*keelfeatures.Registry, error) {
+	registry := keelfeatures.NewRegistry()
+	if err := registry.Register(keelfeatures.NewDockerFeature()); err != nil {
+		return nil, err
+	}
+	return registry, nil
+}
+
+func addDockerMITMCA(cfg config.Config, normalized []keelfeatures.NormalizedFeature) error {
+	if !cfg.Network.MITM.CA.InstallDocker {
+		return nil
+	}
+	dockerIndex := -1
+	for i, feature := range normalized {
+		if feature.Name == "docker" {
+			dockerIndex = i
+			break
+		}
+	}
+	if dockerIndex == -1 {
+		return nil
+	}
+	services, err := (NetworkServiceFactory{}).Build(cfg)
+	if err != nil {
+		return err
+	}
+	if services.TCP.MITM == nil || services.TCP.MITM.CA == nil {
+		return nil
+	}
+	config := cloneAnyMap(normalized[dockerIndex].Config)
+	config["mitm_ca_pem"] = string(services.TCP.MITM.CA.CertPEM)
+	normalized[dockerIndex].Config = config
+	return nil
+}
+
+func normalizedFeatureConfigs(normalized []keelfeatures.NormalizedFeature) []config.FeatureConfig {
+	features := make([]config.FeatureConfig, 0, len(normalized))
+	for _, feature := range normalized {
+		features = append(features, config.FeatureConfig{
+			Name:   feature.Name,
+			Config: feature.Config,
+		})
+	}
+	return features
+}
+
+func cloneAnyMap(items map[string]any) map[string]any {
+	if len(items) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(items))
+	for key, value := range items {
+		out[key] = value
+	}
+	return out
 }
 
 func defaultGuestAgentAssets() (image.GuestAgentAssets, error) {

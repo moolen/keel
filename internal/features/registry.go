@@ -10,9 +10,15 @@ type ConfiguredFeature struct {
 	Config map[string]any
 }
 
+type NormalizedFeature struct {
+	Name   string
+	Config map[string]any
+}
+
 type Feature interface {
 	Name() string
 	ValidateConfig(map[string]any) error
+	NormalizeConfig(map[string]any) (NormalizedFeature, error)
 	PrepareRootfs(string, map[string]any) error
 }
 
@@ -43,6 +49,22 @@ func (r *Registry) Validate(configured []ConfiguredFeature) error {
 		}
 	}
 	return nil
+}
+
+func (r *Registry) Normalize(configured []ConfiguredFeature) ([]NormalizedFeature, error) {
+	normalized := make([]NormalizedFeature, 0, len(configured))
+	for _, item := range configured {
+		feature, ok := r.features[item.Name]
+		if !ok {
+			return nil, fmt.Errorf("unknown feature %q (available: %v)", item.Name, r.Names())
+		}
+		normalizedFeature, err := feature.NormalizeConfig(item.Config)
+		if err != nil {
+			return nil, fmt.Errorf("feature %q: %w", item.Name, err)
+		}
+		normalized = append(normalized, normalizedFeature)
+	}
+	return normalized, nil
 }
 
 func (r *Registry) PrepareRootfs(rootfsPath string, configured []ConfiguredFeature) error {

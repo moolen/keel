@@ -278,41 +278,12 @@ func (r HostRunner) runtimeConfig(cfg config.Config) (config.Config, error) {
 		return config.Config{}, err
 	}
 	updated.RuntimeEnv = values
-	features, err := runtimeFeatureConfig(cfg)
+	features, err := keelruntime.RuntimeFeatureConfig(cfg)
 	if err != nil {
 		return config.Config{}, err
 	}
 	updated.Features = features
 	return updated, nil
-}
-
-func runtimeFeatureConfig(cfg config.Config) ([]config.FeatureConfig, error) {
-	if len(cfg.Features) == 0 {
-		return nil, nil
-	}
-	features := append([]config.FeatureConfig(nil), cfg.Features...)
-	if !cfg.Network.MITM.CA.InstallDocker {
-		return features, nil
-	}
-	services, err := (keelruntime.NetworkServiceFactory{}).Build(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if services.TCP.MITM == nil || services.TCP.MITM.CA == nil {
-		return features, nil
-	}
-	for i := range features {
-		if features[i].Name != "docker" {
-			continue
-		}
-		cloned := map[string]any{}
-		for key, value := range features[i].Config {
-			cloned[key] = value
-		}
-		cloned["mitm_ca_pem"] = string(services.TCP.MITM.CA.CertPEM)
-		features[i].Config = cloned
-	}
-	return features, nil
 }
 
 func (r HostRunner) syncWorkspace(req RunRequest, assets vm.RuntimeAssets) error {

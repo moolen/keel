@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -369,10 +371,8 @@ func TestHostRunnerRuntimeConfigInjectsDockerMITMCAPEM(t *testing.T) {
 	cfg.Network.MITM.CA.Name = "keel-local-ca"
 	cfg.Network.MITM.CA.InstallDocker = true
 	cfg.Features = []config.FeatureConfig{{
-		Name: "docker",
-		Config: map[string]any{
-			"storage_driver": "vfs",
-		},
+		Name:   "docker",
+		Config: map[string]any{},
 	}}
 
 	runner := HostRunner{}
@@ -386,6 +386,52 @@ func TestHostRunnerRuntimeConfigInjectsDockerMITMCAPEM(t *testing.T) {
 	value, ok := runtimeCfg.Features[0].Config["mitm_ca_pem"].(string)
 	if !ok || !strings.Contains(value, "BEGIN CERTIFICATE") {
 		t.Fatalf("mitm_ca_pem = %#v, want CA PEM string", runtimeCfg.Features[0].Config["mitm_ca_pem"])
+	}
+	if got := runtimeCfg.Features[0].Config["storage_driver"]; got != "vfs" {
+		t.Fatalf("storage_driver = %#v, want vfs", got)
+	}
+}
+
+func TestHostRunnerRuntimeConfigNormalizesDockerFeatureForKernelArgs(t *testing.T) {
+	cfg := config.Default()
+	cfg.Features = []config.FeatureConfig{{
+		Name: "docker",
+		Config: map[string]any{
+			"registry_mirrors": []any{"https://mirror.example"},
+		},
+	}}
+
+	runtimeCfg, err := (HostRunner{}).runtimeConfig(cfg)
+	if err != nil {
+		t.Fatalf("runtimeConfig() error = %v", err)
+	}
+	if len(runtimeCfg.Features) != 1 || runtimeCfg.Features[0].Name != "docker" {
+		t.Fatalf("runtime features = %#v", runtimeCfg.Features)
+	}
+	if got := runtimeCfg.Features[0].Config["storage_driver"]; got != "vfs" {
+		t.Fatalf("runtime storage_driver = %#v, want vfs", got)
+	}
+
+	machine := vm.NewMachine(runtimeCfg, vm.RuntimeAssets{
+		KernelPath:    "/tmp/vmlinux",
+		RootfsPath:    "/tmp/rootfs.ext4",
+		WorkspacePath: "/tmp/workspace.ext4",
+		MetadataPath:  "/tmp/bootmeta.ext4",
+		SocketPath:    "/tmp/firecracker.sock",
+		VSockPath:     "/tmp/firecracker.vsock",
+		LogPath:       "/tmp/firecracker.log",
+		CID:           52,
+	})
+	hvCfg, err := machine.BuildHypervisorConfig()
+	if err != nil {
+		t.Fatalf("BuildHypervisorConfig() error = %v", err)
+	}
+	features := decodeKernelArgFeatures(t, hvCfg.KernelArgs)
+	if got := features[0].Config["storage_driver"]; got != "vfs" {
+		t.Fatalf("kernel storage_driver = %#v, want vfs", got)
+	}
+	if _, ok := features[0].Config["registry_mirrors"]; !ok {
+		t.Fatalf("kernel feature config = %#v, want registry_mirrors", features[0].Config)
 	}
 }
 
@@ -1074,6 +1120,26 @@ func runtimeAssetsForHostRunnerVMTest(t *testing.T, dir string) vm.RuntimeAssets
 		}
 	}
 	return assets
+}
+
+func decodeKernelArgFeatures(t *testing.T, kernelArgs string) []config.FeatureConfig {
+	t.Helper()
+	for _, field := range strings.Fields(kernelArgs) {
+		if !strings.HasPrefix(field, "keel.features=") {
+			continue
+		}
+		data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(field, "keel.features="))
+		if err != nil {
+			t.Fatalf("DecodeString() error = %v", err)
+		}
+		var features []config.FeatureConfig
+		if err := json.Unmarshal(data, &features); err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		return features
+	}
+	t.Fatalf("keel.features not found in %q", kernelArgs)
+	return nil
 }
 
 func writeCachedRootfsForHostRunnerTest(t *testing.T, cacheDir, imageRef string) string {

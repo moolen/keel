@@ -2,6 +2,7 @@ package features
 
 import (
 	"context"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -163,22 +164,7 @@ func TestRunConfiguredSkipsWhenDockerFeatureAbsent(t *testing.T) {
 	}
 }
 
-func TestRunConfiguredRejectsMissingDockerd(t *testing.T) {
-	runner := Runner{
-		LookupPath: func(file string) (string, error) {
-			return "", os.ErrNotExist
-		},
-		Stat: func(string) (os.FileInfo, error) {
-			return nil, os.ErrNotExist
-		},
-	}
-	err := runner.RunConfigured(context.Background(), []ConfiguredFeature{{Name: "docker"}}, nil)
-	if err == nil || !strings.Contains(err.Error(), "docker feature requires") {
-		t.Fatalf("RunConfigured() error = %v", err)
-	}
-}
-
-func TestDockerFeatureWritesCACertWhenConfigured(t *testing.T) {
+func TestDockerFeatureDefaultsStorageDriver(t *testing.T) {
 	writes := map[string]string{}
 	runner := Runner{
 		LookupPath: func(file string) (string, error) {
@@ -200,6 +186,61 @@ func TestDockerFeatureWritesCACertWhenConfigured(t *testing.T) {
 	}
 
 	err := runner.RunConfigured(context.Background(), []ConfiguredFeature{{
+		Name:   "docker",
+		Config: map[string]any{},
+	}}, []string{"PATH=/usr/bin"})
+	if err != nil {
+		t.Fatalf("RunConfigured() error = %v", err)
+	}
+	if got := writes["/etc/docker/daemon.json"]; !strings.Contains(got, `"storage-driver":"vfs"`) {
+		t.Fatalf("daemon.json = %s, want storage-driver vfs", got)
+	}
+}
+
+func TestRunConfiguredRejectsMissingDockerd(t *testing.T) {
+	runner := Runner{
+		LookupPath: func(file string) (string, error) {
+			return "", os.ErrNotExist
+		},
+		Stat: func(string) (os.FileInfo, error) {
+			return nil, os.ErrNotExist
+		},
+	}
+	err := runner.RunConfigured(context.Background(), []ConfiguredFeature{{Name: "docker"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "docker feature requires") {
+		t.Fatalf("RunConfigured() error = %v", err)
+	}
+}
+
+func TestDockerFeatureWritesCACertWhenConfigured(t *testing.T) {
+	writes := map[string]string{}
+	var events []string
+	runner := Runner{
+		LookupPath: func(file string) (string, error) {
+			return "/usr/local/bin/" + file, nil
+		},
+		MkdirAll: func(path string, _ os.FileMode) error {
+			return nil
+		},
+		WriteFile: func(path string, data []byte, _ os.FileMode) error {
+			writes[path] = string(append([]byte(nil), data...))
+			return nil
+		},
+		Remove:    func(string) error { return nil },
+		RemoveAll: func(string) error { return nil },
+		StartProcess: func(context.Context, string, []string, []string, string, int) error {
+			events = append(events, "start-dockerd")
+			return nil
+		},
+		WaitForFile:   func(string) error { return nil },
+		WaitForDaemon: func([]string) error { return nil },
+		RunCommand: func(name string, args ...string) error {
+			events = append(events, name)
+			return nil
+		},
+	}
+
+	err := runner.RunConfigured(context.Background(), []ConfiguredFeature{{
 		Name: "docker",
 		Config: map[string]any{
 			"mitm_ca_pem": "-----BEGIN CERTIFICATE-----\ntrust\n-----END CERTIFICATE-----\n",
@@ -213,6 +254,47 @@ func TestDockerFeatureWritesCACertWhenConfigured(t *testing.T) {
 	}
 	if got := writes["/usr/local/share/ca-certificates/keel-local-ca.crt"]; !strings.Contains(got, "BEGIN CERTIFICATE") {
 		t.Fatalf("system trust cert = %q", got)
+	}
+	if !reflect.DeepEqual(events[:2], []string{"/usr/local/bin/update-ca-certificates", "start-dockerd"}) {
+		t.Fatalf("events = %#v, want trust update before dockerd start", events)
+	}
+}
+
+func TestDockerFeatureRejectsFailedTrustActivation(t *testing.T) {
+	var started bool
+	runner := Runner{
+		LookupPath: func(file string) (string, error) {
+			return "/usr/local/bin/" + file, nil
+		},
+		MkdirAll:  func(string, os.FileMode) error { return nil },
+		WriteFile: func(string, []byte, os.FileMode) error { return nil },
+		Remove:    func(string) error { return nil },
+		RemoveAll: func(string) error { return nil },
+		StartProcess: func(context.Context, string, []string, []string, string, int) error {
+			started = true
+			return nil
+		},
+		WaitForFile:   func(string) error { return nil },
+		WaitForDaemon: func([]string) error { return nil },
+		RunCommand: func(name string, args ...string) error {
+			if name == "/usr/local/bin/update-ca-certificates" {
+				return errors.New("trust update failed")
+			}
+			return nil
+		},
+	}
+
+	err := runner.RunConfigured(context.Background(), []ConfiguredFeature{{
+		Name: "docker",
+		Config: map[string]any{
+			"mitm_ca_pem": "-----BEGIN CERTIFICATE-----\ntrust\n-----END CERTIFICATE-----\n",
+		},
+	}}, []string{"PATH=/usr/bin"})
+	if err == nil || !strings.Contains(err.Error(), "activate docker MITM CA trust") {
+		t.Fatalf("RunConfigured() error = %v, want trust activation failure", err)
+	}
+	if started {
+		t.Fatal("dockerd started after failed trust activation")
 	}
 }
 

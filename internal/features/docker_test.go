@@ -33,6 +33,24 @@ func TestDockerFeaturePrepareRootfsAcceptsDockerImage(t *testing.T) {
 	}
 }
 
+func TestDockerFeatureNormalizesConfig(t *testing.T) {
+	normalized, err := NewDockerFeature().NormalizeConfig(map[string]any{
+		"registry_mirrors": []any{"https://mirror.example"},
+	})
+	if err != nil {
+		t.Fatalf("NormalizeConfig() error = %v", err)
+	}
+	if normalized.Name != "docker" {
+		t.Fatalf("NormalizeConfig() name = %q, want docker", normalized.Name)
+	}
+	if got := normalized.Config["storage_driver"]; got != "vfs" {
+		t.Fatalf("NormalizeConfig() storage_driver = %#v, want vfs", got)
+	}
+	if _, ok := normalized.Config["registry_mirrors"]; !ok {
+		t.Fatalf("NormalizeConfig() config = %#v, want registry_mirrors", normalized.Config)
+	}
+}
+
 func createEmptyRootfs(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("mkfs.ext4"); err != nil {

@@ -13,6 +13,7 @@ type DockerFeature struct{}
 type DockerConfig struct {
 	StorageDriver   string   `json:"storage_driver"`
 	RegistryMirrors []string `json:"registry_mirrors"`
+	MITMCAPEM       string   `json:"mitm_ca_pem"`
 }
 
 func NewDockerFeature() DockerFeature {
@@ -24,17 +25,40 @@ func (DockerFeature) Name() string {
 }
 
 func (DockerFeature) ValidateConfig(raw map[string]any) error {
+	_, err := decodeDockerConfig(raw)
+	return err
+}
+
+func (feature DockerFeature) NormalizeConfig(raw map[string]any) (NormalizedFeature, error) {
+	cfg, err := decodeDockerConfig(raw)
+	if err != nil {
+		return NormalizedFeature{}, err
+	}
+	if cfg.StorageDriver == "" {
+		cfg.StorageDriver = "vfs"
+	}
+	config := map[string]any{
+		"storage_driver":   cfg.StorageDriver,
+		"registry_mirrors": cfg.RegistryMirrors,
+	}
+	if strings.TrimSpace(cfg.MITMCAPEM) != "" {
+		config["mitm_ca_pem"] = cfg.MITMCAPEM
+	}
+	return NormalizedFeature{Name: feature.Name(), Config: config}, nil
+}
+
+func decodeDockerConfig(raw map[string]any) (DockerConfig, error) {
 	var cfg DockerConfig
 	if len(raw) > 0 {
 		data, err := json.Marshal(raw)
 		if err != nil {
-			return err
+			return DockerConfig{}, err
 		}
 		if err := json.Unmarshal(data, &cfg); err != nil {
-			return err
+			return DockerConfig{}, err
 		}
 	}
-	return nil
+	return cfg, nil
 }
 
 func (DockerFeature) PrepareRootfs(rootfsPath string, _ map[string]any) error {

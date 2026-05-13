@@ -71,6 +71,10 @@ func (s *stubFeature) ValidateConfig(map[string]any) error {
 	return nil
 }
 
+func (s *stubFeature) NormalizeConfig(config map[string]any) (NormalizedFeature, error) {
+	return NormalizedFeature{Name: s.name, Config: config}, nil
+}
+
 func (s *stubFeature) PrepareRootfs(rootfsPath string, config map[string]any) error {
 	s.prepareRootfsPath = rootfsPath
 	s.prepareConfig = config

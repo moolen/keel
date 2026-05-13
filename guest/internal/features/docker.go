@@ -58,15 +58,9 @@ func (r Runner) RunConfigured(ctx context.Context, configured []ConfiguredFeatur
 }
 
 func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []string) error {
-	cfg := DockerConfig{StorageDriver: "vfs"}
-	if len(raw) > 0 {
-		data, err := json.Marshal(raw)
-		if err != nil {
-			return err
-		}
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return err
-		}
+	cfg, err := decodeDockerConfig(raw)
+	if err != nil {
+		return err
 	}
 
 	lookupPath := r.LookupPath
@@ -151,6 +145,10 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	if err := writeFile("/etc/docker/client/config.json", clientConfig, 0o644); err != nil {
 		return err
 	}
+	runCommand := r.RunCommand
+	if runCommand == nil {
+		runCommand = runGuestCommand
+	}
 	daemonEnv := env
 	if strings.HasSuffix(iptablesPath, "iptables-legacy") {
 		if err := installDockerCommandWrapper(mkdirAll, writeFile, "iptables", iptablesPath); err != nil {
@@ -171,6 +169,9 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 		if err := writeFile("/usr/local/share/ca-certificates/keel-local-ca.crt", []byte(cfg.MITMCAPEM), 0o644); err != nil {
 			return err
 		}
+		if err := activateDockerMITMTrust(lookupPath, stat, runCommand); err != nil {
+			return err
+		}
 	}
 	remove := r.Remove
 	if remove == nil {
@@ -179,10 +180,6 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 	removeAll := r.RemoveAll
 	if removeAll == nil {
 		removeAll = os.RemoveAll
-	}
-	runCommand := r.RunCommand
-	if runCommand == nil {
-		runCommand = runGuestCommand
 	}
 	if err := ensureDockerForwarding(writeFile, stat); err != nil {
 		return err
@@ -223,6 +220,36 @@ func (r Runner) startDocker(ctx context.Context, raw map[string]any, env []strin
 		return err
 	}
 	return ensureDockerTransparentRedirect(runCommand, iptablesPath)
+}
+
+func activateDockerMITMTrust(lookupPath func(string) (string, error), stat func(string) (os.FileInfo, error), runCommand func(string, ...string) error) error {
+	path, ok := findOptionalBinary(lookupPath, stat, "update-ca-certificates", []string{"/usr/sbin/update-ca-certificates", "/usr/bin/update-ca-certificates", "/sbin/update-ca-certificates", "/bin/update-ca-certificates"})
+	if !ok {
+		// Docker also reads /etc/docker/certs.d; images without a system trust updater still get Docker-specific trust.
+		return nil
+	}
+	if err := runCommand(path); err != nil {
+		return fmt.Errorf("activate docker MITM CA trust: %w", err)
+	}
+	return nil
+}
+
+func decodeDockerConfig(raw map[string]any) (DockerConfig, error) {
+	cfg := DockerConfig{StorageDriver: "vfs"}
+	if len(raw) == 0 {
+		return cfg, nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return DockerConfig{}, err
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return DockerConfig{}, err
+	}
+	if cfg.StorageDriver == "" {
+		cfg.StorageDriver = "vfs"
+	}
+	return cfg, nil
 }
 
 func installDockerCommandWrapper(mkdirAll func(string, os.FileMode) error, writeFile func(string, []byte, os.FileMode) error, name, target string) error {
