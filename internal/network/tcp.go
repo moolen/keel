@@ -100,15 +100,15 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	requiredPlaintextHTTP := false
 	if decision.Allowed && decision.MITMRequired {
 		if p.MITM == nil || !p.MITM.Enabled {
-			decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
+			decision = p.applyPolicyAudit(Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost})
 		} else if isTLS {
 			if sni == "" || tlsInspectionRequired(preface, sni, inspectErr) {
-				decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
+				decision = p.applyPolicyAudit(Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost})
 			}
 		} else if hasHTTPPolicyConfig(decision.HTTP) {
 			requiredPlaintextHTTP = true
 		} else {
-			decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
+			decision = p.applyPolicyAudit(Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost})
 		}
 	}
 	if decision.Allowed && requiredPlaintextHTTP {
@@ -117,10 +117,7 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 			connToRead = &prefixedConn{Conn: conn, prefix: bytes.NewReader(preface)}
 		}
 		httpPreface, _, isHTTP, err := readHTTPPreface(connToRead)
-		if err != nil {
-			return err
-		}
-		if isHTTP {
+		if err == nil && isHTTP {
 			p.Summary.RecordTCP(summaryHostForDecision(p.Policy, decision, ip, port, sni, now), port, decision)
 			p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
 			return mitm.HandleHTTP(ctx, &prefixedConn{
@@ -128,7 +125,27 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 				prefix: bytes.NewReader(httpPreface),
 			}, destination)
 		}
-		decision = Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost}
+		if len(httpPreface) > 0 {
+			preface = httpPreface
+		}
+		decision = p.applyPolicyAudit(Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost})
+	}
+	if decision.MITMRequired && !decision.WouldDeny && isTLS && len(preface) > 0 && sni != "" {
+		err := mitm.HandleTLS(ctx, &prefixedConn{
+			Conn:   conn,
+			prefix: bytes.NewReader(preface),
+		}, sni, destination)
+		if err == nil || isIgnorableProxyError(err) {
+			p.Summary.RecordTCP(summaryHostForDecision(p.Policy, decision, ip, port, sni, now), port, decision)
+			p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
+			return err
+		}
+		decision = p.applyPolicyAudit(Decision{Reason: "required mitm inspection unavailable", Rule: decision.Rule, EndpointHost: decision.EndpointHost})
+		if !decision.WouldDeny {
+			p.Summary.RecordTCP(summaryHostForDecision(p.Policy, decision, ip, port, sni, now), port, decision)
+			p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
+			return nil
+		}
 	}
 	p.Summary.RecordTCP(summaryHostForDecision(p.Policy, decision, ip, port, sni, now), port, decision)
 	if !decision.Allowed {
@@ -137,7 +154,7 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 	}
 	p.Events.Printf("tcp", "%s destination=%s sni=%s rule=%s reason=%s", decisionLabel(decision), destination, sni, decision.Rule, decision.Reason)
 
-	if mitm != nil && !isTLS && mitm.Enabled && hasHTTPPolicyConfig(decision.HTTP) {
+	if mitm != nil && !decision.WouldDeny && !isTLS && mitm.Enabled && hasHTTPPolicyConfig(decision.HTTP) {
 		connToRead := conn
 		if len(preface) > 0 {
 			connToRead = &prefixedConn{Conn: conn, prefix: bytes.NewReader(preface)}
@@ -153,13 +170,6 @@ func (p TCPProxy) handleConn(ctx context.Context, conn net.Conn) error {
 			}, destination)
 		}
 		preface = httpPreface
-	}
-
-	if decision.MITMRequired && isTLS && len(preface) > 0 && sni != "" {
-		return mitm.HandleTLS(ctx, &prefixedConn{
-			Conn:   conn,
-			prefix: bytes.NewReader(preface),
-		}, sni, destination)
 	}
 
 	dialContext := p.DialContext
@@ -193,7 +203,11 @@ func mitmForDecision(mitm *MITMProxy, decision Decision) *MITMProxy {
 }
 
 func hasHTTPPolicyConfig(cfg HTTPPolicyConfig) bool {
-	return strings.TrimSpace(cfg.Default) != "" || len(cfg.Rules) > 0 || cfg.Audit
+	return cfg.Enabled || strings.TrimSpace(cfg.Default) != "" || len(cfg.Rules) > 0 || cfg.Audit
+}
+
+func (p TCPProxy) applyPolicyAudit(decision Decision) Decision {
+	return p.Policy.ApplyAudit(decision)
 }
 
 func summaryHostForDecision(policy *PolicyEngine, decision Decision, ip net.IP, port int, sni string, now time.Time) string {
@@ -363,7 +377,7 @@ func readHTTPPreface(conn net.Conn) ([]byte, string, bool, error) {
 		if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "malformed HTTP request") {
 			return preface.Bytes(), "", false, nil
 		}
-		return nil, "", false, err
+		return preface.Bytes(), "", false, err
 	}
 	closeRequestBody(req)
 	return preface.Bytes(), normalizeHTTPHost(req.Host), true, nil

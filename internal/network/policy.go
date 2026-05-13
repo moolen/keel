@@ -133,16 +133,25 @@ func evaluateEndpointAuthorizations(auths []DNSAuthorization, sni string, isTLS 
 				continue
 			}
 		}
+		httpPolicy := auth.HTTP
+		httpPolicy.ScopeHost = auth.Host
 		return Decision{
 			Allowed:      true,
 			Reason:       "tcp allowed by endpoint authorization",
 			Rule:         auth.Rule,
 			EndpointHost: normalizeName(auth.Host),
 			MITMRequired: auth.MITMRequired,
-			HTTP:         auth.HTTP,
+			HTTP:         httpPolicy,
 		}, true
 	}
 	return Decision{}, false
+}
+
+func (e *PolicyEngine) ApplyAudit(decision Decision) Decision {
+	if e == nil {
+		return decision
+	}
+	return e.applyAudit(decision)
 }
 
 func (e *PolicyEngine) applyAudit(decision Decision) Decision {

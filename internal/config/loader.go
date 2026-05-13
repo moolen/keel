@@ -418,7 +418,7 @@ func validEndpointHost(host string) bool {
 
 func validateEndpointHTTP(http EndpointHTTPConfig) error {
 	switch http.Default {
-	case "allow", "deny":
+	case "", "allow", "deny":
 	default:
 		return errors.New("network.endpoints.http.default must be allow or deny")
 	}

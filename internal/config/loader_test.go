@@ -252,6 +252,27 @@ network:
 	if cfg.Network.MITM.CA.Name != "keel-local-ca" || !cfg.Network.MITM.CA.InstallSystem || !cfg.Network.MITM.CA.InstallDocker {
 		t.Fatalf("MITM CA = %+v", cfg.Network.MITM.CA)
 	}
+
+	writeFile(t, filepath.Join(projectDir, "keel.yaml"), `
+network:
+  endpoints:
+    - host: api.github.com
+      port: 443
+      mitm:
+        required: true
+      http:
+        rules:
+          - action: allow
+            methods: ["GET"]
+            paths: ["/repos/*"]
+`)
+	cfg, err = Load(LoadOptions{WorkingDir: projectDir})
+	if err != nil {
+		t.Fatalf("Load() with implicit endpoint HTTP default error = %v", err)
+	}
+	if got := cfg.Network.Endpoints[0].HTTP.Default; got != "" {
+		t.Fatalf("implicit endpoint HTTP default = %q, want empty config value", got)
+	}
 }
 
 func TestLoadRejectsOldNetworkPolicyFields(t *testing.T) {
@@ -327,11 +348,6 @@ func TestLoadRejectsInvalidNetworkConfig(t *testing.T) {
 			name: "endpoint http without required mitm",
 			body: "network:\n  endpoints:\n    - host: api.github.com\n      port: 443\n      http:\n        default: deny\n",
 			want: "mitm.required",
-		},
-		{
-			name: "endpoint http missing default",
-			body: "network:\n  endpoints:\n    - host: api.github.com\n      port: 443\n      mitm:\n        required: true\n      http:\n        rules:\n          - action: allow\n",
-			want: "default",
 		},
 		{
 			name: "endpoint invalid http default",

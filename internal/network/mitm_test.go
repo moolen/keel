@@ -124,6 +124,77 @@ func TestMITMProxyAllowsHTTPRequest(t *testing.T) {
 	assertSummaryReportContains(t, summary, "http api.github.com GET /repos/123 policy=allowed count=1")
 }
 
+func TestMITMProxyRejectsHTTPRequestOutsideEndpointScope(t *testing.T) {
+	proxyCA, err := LoadOrCreateCA(CAOptions{Dir: t.TempDir(), Name: "keel-local-ca"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mitmRoots, err := CertPoolFromPEM(proxyCA.CertPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	summary := NewSummary()
+	var dialed atomic.Bool
+	proxy := &MITMProxy{
+		Enabled: true,
+		CA:      proxyCA,
+		Policy: NewHTTPPolicy(HTTPPolicyConfig{
+			ScopeHost: "api.github.com",
+			Default:   "allow",
+		}),
+		Summary: summary,
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed.Store(true)
+			return nil, io.ErrClosedPipe
+		},
+	}
+
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- proxy.HandleTLS(context.Background(), proxySide, "api.github.com", "203.0.113.10:443")
+	}()
+
+	clientTLS := tls.Client(clientSide, &tls.Config{
+		RootCAs:    mitmRoots,
+		ServerName: "api.github.com",
+		NextProtos: []string{"http/1.1"},
+	})
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
+		t.Fatalf("client handshake error = %v", err)
+	}
+	if _, err := io.WriteString(clientTLS, "GET / HTTP/1.1\r\nHost: gist.github.com\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(clientTLS), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if dialed.Load() {
+		t.Fatal("dialer was called for request outside endpoint scope")
+	}
+	_ = clientTLS.Close()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !strings.Contains(err.Error(), "closed pipe") {
+			t.Fatalf("HandleTLS() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for HandleTLS")
+	}
+
+	assertSummaryReportContains(t, summary, "http gist.github.com GET / policy=denied count=1")
+}
+
 func TestMITMProxyKeepsConnectionAliveAcrossRequests(t *testing.T) {
 	proxyCA, err := LoadOrCreateCA(CAOptions{Dir: t.TempDir(), Name: "keel-local-ca"})
 	if err != nil {
@@ -645,7 +716,7 @@ func TestTCPProxyUsesMITMForEligibleTLSFlows(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
+		if err != nil && !strings.Contains(err.Error(), "closed pipe") {
 			t.Fatalf("handleConn() error = %v", err)
 		}
 	case <-time.After(2 * time.Second):
@@ -747,7 +818,7 @@ func TestTCPProxyAllowsDeniedDestinationInAuditMode(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
+		if err != nil && !strings.Contains(err.Error(), "closed pipe") {
 			t.Fatalf("handleConn() error = %v", err)
 		}
 	case <-time.After(2 * time.Second):
@@ -837,7 +908,7 @@ func TestTCPProxyUsesMITMForPlainHTTPFlows(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
+		if err != nil && !strings.Contains(err.Error(), "closed pipe") {
 			t.Fatalf("handleConn() error = %v", err)
 		}
 	case <-time.After(2 * time.Second):
@@ -846,6 +917,80 @@ func TestTCPProxyUsesMITMForPlainHTTPFlows(t *testing.T) {
 
 	assertSummaryReportContains(t, summary, "tcp  api.github.com:80 policy=allowed count=1")
 	assertSummaryReportContains(t, summary, "http api.github.com GET / policy=allowed count=1")
+}
+
+func TestTCPProxyRejectsPlainHTTPOutsideEndpointScope(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	engine := NewPolicyEngine(PolicyConfig{
+		Endpoints: []EndpointRule{{
+			Host:         "api.github.com",
+			Port:         80,
+			MITMRequired: true,
+			HTTP: HTTPPolicyConfig{
+				Default: "allow",
+			},
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
+
+	summary := NewSummary()
+	var dialed atomic.Bool
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		Now: func() time.Time {
+			return time.Unix(110, 0)
+		},
+		MITM: &MITMProxy{
+			Enabled: true,
+			Policy:  NewHTTPPolicy(HTTPPolicyConfig{Default: "allow"}),
+			Summary: summary,
+			DialContext: func(context.Context, string, string) (net.Conn, error) {
+				dialed.Store(true)
+				return nil, io.ErrClosedPipe
+			},
+		},
+	}
+
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- proxy.handleConn(context.Background(), proxySide)
+	}()
+
+	if err := writeDestinationHeader(clientSide, "203.0.113.10:80"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	if _, err := io.WriteString(clientSide, "GET / HTTP/1.1\r\nHost: gist.github.com\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(clientSide), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if dialed.Load() {
+		t.Fatal("dialer was called for request outside endpoint scope")
+	}
+	_ = clientSide.Close()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !strings.Contains(err.Error(), "closed pipe") {
+			t.Fatalf("handleConn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:80 policy=allowed count=1")
+	assertSummaryReportContains(t, summary, "http gist.github.com GET / policy=denied count=1")
 }
 
 func TestTCPProxyBypassesMITMForPlainHTTPBypassHost(t *testing.T) {

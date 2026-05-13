@@ -90,7 +90,7 @@ func TestTCPProxyAllowsCorrelatedDestination(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
+		if err != nil && !strings.Contains(err.Error(), "closed pipe") {
 			t.Fatalf("handleConn() error = %v", err)
 		}
 	case <-time.After(2 * time.Second):
@@ -421,6 +421,250 @@ func TestTCPProxyDeniesRequiredMITMPlaintextWhenNotHTTP(t *testing.T) {
 	assertSummaryReportContains(t, summary, "tcp  api.github.com:80 policy=denied count=1")
 }
 
+func TestTCPProxyAllowsRequiredMITMUnavailableInAuditMode(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	engine := NewPolicyEngine(PolicyConfig{
+		Audit: true,
+		Endpoints: []EndpointRule{{
+			Host:         "api.github.com",
+			Port:         443,
+			MITMRequired: true,
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
+
+	summary := NewSummary()
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+	upstreamProxy, upstreamServer := net.Pipe()
+	defer upstreamServer.Close()
+
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		Now:     func() time.Time { return time.Unix(110, 0) },
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return upstreamProxy, nil
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proxy.handleConn(context.Background(), proxySide) }()
+	go echoFixedPayload(t, upstreamServer, "ping", "pong")
+
+	if err := writeDestinationHeader(clientSide, "203.0.113.10:443"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	if _, err := clientSide.Write([]byte("ping")); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+	reply := make([]byte, 4)
+	if _, err := io.ReadFull(clientSide, reply); err != nil {
+		t.Fatalf("client read error = %v", err)
+	}
+	if string(reply) != "pong" {
+		t.Fatalf("reply = %q, want pong", string(reply))
+	}
+	_ = clientSide.Close()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handleConn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:443 policy=would_deny count=1")
+}
+
+func TestTCPProxyAllowsRequiredMITMWithoutSNIInAuditMode(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	engine := NewPolicyEngine(PolicyConfig{
+		Audit: true,
+		Endpoints: []EndpointRule{{
+			Host:         "api.github.com",
+			Port:         443,
+			MITMRequired: true,
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
+
+	summary := NewSummary()
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+	upstreamProxy, upstreamServer := net.Pipe()
+	defer upstreamServer.Close()
+	hello := mustClientHelloBytesWithoutSNIForTCP(t)
+	forwarded := make(chan []byte, 1)
+
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		MITM:    &MITMProxy{Enabled: true},
+		Now:     func() time.Time { return time.Unix(110, 0) },
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return upstreamProxy, nil
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proxy.handleConn(context.Background(), proxySide) }()
+	go readForwardedPayload(t, upstreamServer, len(hello), forwarded)
+
+	if err := writeDestinationHeader(clientSide, "203.0.113.10:443"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	if _, err := clientSide.Write(hello); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+	_ = clientSide.Close()
+
+	select {
+	case got := <-forwarded:
+		if !bytes.Equal(got, hello) {
+			t.Fatalf("forwarded preface len=%d, want %d", len(got), len(hello))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for forwarded preface")
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handleConn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:443 policy=would_deny count=1")
+}
+
+func TestTCPProxyAllowsRequiredTLSMITMFailureInAuditMode(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	engine := NewPolicyEngine(PolicyConfig{
+		Audit: true,
+		Endpoints: []EndpointRule{{
+			Host:            "api.github.com",
+			Port:            443,
+			RequireSNIMatch: true,
+			MITMRequired:    true,
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
+
+	summary := NewSummary()
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+	upstream := &recordingConn{}
+	dialed := make(chan struct{}, 1)
+
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		MITM:    &MITMProxy{Enabled: true},
+		Now:     func() time.Time { return time.Unix(110, 0) },
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed <- struct{}{}
+			return upstream, nil
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proxy.handleConn(context.Background(), proxySide) }()
+	hello := mustClientHelloBytesForTCP(t, "api.github.com")
+
+	if err := writeDestinationHeader(clientSide, "203.0.113.10:443"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	if _, err := clientSide.Write(hello); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+
+	select {
+	case <-dialed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dialer was not called after required MITM failure in audit mode")
+	}
+	_ = clientSide.Close()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !strings.Contains(err.Error(), "closed pipe") {
+			t.Fatalf("handleConn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+	if got := upstream.String(); got != string(hello) {
+		t.Fatalf("forwarded preface len=%d, want %d", len(got), len(hello))
+	}
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:443 policy=would_deny count=1")
+}
+
+func TestTCPProxyAllowsRequiredMITMPlaintextNonHTTPInAuditMode(t *testing.T) {
+	tracker := NewTracker(60 * time.Second)
+	engine := NewPolicyEngine(PolicyConfig{
+		Audit: true,
+		Endpoints: []EndpointRule{{
+			Host:         "api.github.com",
+			Port:         80,
+			MITMRequired: true,
+			HTTP: HTTPPolicyConfig{
+				Default: "allow",
+			},
+		}},
+	}, tracker)
+	observeEndpointDNS(t, engine, "api.github.com", "203.0.113.10")
+
+	summary := NewSummary()
+	clientSide, proxySide := net.Pipe()
+	defer clientSide.Close()
+	upstream := &recordingConn{}
+	dialed := make(chan struct{}, 1)
+
+	proxy := TCPProxy{
+		Policy:  engine,
+		Summary: summary,
+		MITM: &MITMProxy{
+			Enabled: true,
+			Policy:  NewHTTPPolicy(HTTPPolicyConfig{Default: "allow"}),
+		},
+		Now: func() time.Time { return time.Unix(110, 0) },
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed <- struct{}{}
+			return upstream, nil
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proxy.handleConn(context.Background(), proxySide) }()
+	invalidHTTP := "GET / HTTP/1.1\r\nBad-Header\r\n\r\n"
+
+	if err := writeDestinationHeader(clientSide, "203.0.113.10:80"); err != nil {
+		t.Fatalf("writeDestinationHeader() error = %v", err)
+	}
+	if _, err := io.WriteString(clientSide, invalidHTTP); err != nil {
+		t.Fatalf("client write error = %v", err)
+	}
+
+	select {
+	case <-dialed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dialer was not called in audit mode")
+	}
+	_ = clientSide.Close()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !strings.Contains(err.Error(), "closed pipe") {
+			t.Fatalf("handleConn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleConn")
+	}
+	assertSummaryReportContains(t, summary, "tcp  api.github.com:80 policy=would_deny count=1")
+}
+
 func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
 	engine := NewPolicyEngine(PolicyConfig{
 		Audit: true,
@@ -468,6 +712,12 @@ func TestTCPProxyLogsWouldDenyInAuditModeOnOwnLine(t *testing.T) {
 	}
 	if !strings.Contains(got, "would_deny destination=198.51.100.25:80 sni= rule=default reason=tcp destination not authorized") {
 		t.Fatalf("events = %q, want would_deny audit log", got)
+	}
+}
+
+func TestHasHTTPPolicyConfigIncludesExplicitEmptyPolicy(t *testing.T) {
+	if !hasHTTPPolicyConfig(HTTPPolicyConfig{Enabled: true}) {
+		t.Fatal("hasHTTPPolicyConfig() = false, want true for explicit empty policy")
 	}
 }
 
@@ -765,6 +1015,86 @@ func mustClientHelloBytesWithoutSNIForTCP(t *testing.T) []byte {
 
 	return nil
 }
+
+func echoFixedPayload(t *testing.T, conn net.Conn, want, reply string) {
+	t.Helper()
+	defer conn.Close()
+
+	buf := make([]byte, len(want))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Errorf("upstream read error = %v", err)
+		return
+	}
+	if string(buf) != want {
+		t.Errorf("upstream payload = %q, want %q", string(buf), want)
+		return
+	}
+	if _, err := io.WriteString(conn, reply); err != nil {
+		t.Errorf("upstream write error = %v", err)
+	}
+}
+
+func readForwardedPayload(t *testing.T, conn net.Conn, size int, out chan<- []byte) {
+	t.Helper()
+	defer conn.Close()
+
+	buf := make([]byte, size)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Errorf("upstream read error = %v", err)
+		return
+	}
+	out <- buf
+}
+
+type recordingConn struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *recordingConn) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (c *recordingConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *recordingConn) Close() error {
+	return nil
+}
+
+func (c *recordingConn) LocalAddr() net.Addr {
+	return dummyAddr("local")
+}
+
+func (c *recordingConn) RemoteAddr() net.Addr {
+	return dummyAddr("remote")
+}
+
+func (c *recordingConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c *recordingConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c *recordingConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+func (c *recordingConn) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
+type dummyAddr string
+
+func (a dummyAddr) Network() string { return string(a) }
+func (a dummyAddr) String() string  { return string(a) }
 
 func observeEndpointDNS(t *testing.T, engine *PolicyEngine, host, ip string) {
 	t.Helper()

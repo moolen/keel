@@ -21,9 +21,11 @@ type HTTPRule struct {
 }
 
 type HTTPPolicyConfig struct {
-	Default string
-	Rules   []HTTPRule
-	Audit   bool
+	ScopeHost string
+	Enabled   bool
+	Default   string
+	Rules     []HTTPRule
+	Audit     bool
 }
 
 type HTTPPolicy struct {
@@ -42,6 +44,14 @@ func (p *HTTPPolicy) Evaluate(req HTTPRequest) Decision {
 	req.Method = strings.ToUpper(strings.TrimSpace(req.Method))
 	req.Path = normalizeHTTPPath(req.Path)
 
+	if !p.matchesScope(req.Host) {
+		return applyHTTPAudit(p.cfg, Decision{
+			Allowed: false,
+			Reason:  "http host outside endpoint",
+			Rule:    "endpoint:" + normalizeHTTPHost(p.cfg.ScopeHost),
+		})
+	}
+
 	for _, rule := range p.cfg.Rules {
 		if !matchHTTPRule(rule, req) {
 			continue
@@ -58,6 +68,11 @@ func (p *HTTPPolicy) Evaluate(req HTTPRequest) Decision {
 		Reason:  "http default",
 		Rule:    "default",
 	})
+}
+
+func (p *HTTPPolicy) matchesScope(host string) bool {
+	scope := normalizeHTTPHost(p.cfg.ScopeHost)
+	return scope == "" || matchHTTPHost(scope, host)
 }
 
 func applyHTTPAudit(cfg HTTPPolicyConfig, decision Decision) Decision {

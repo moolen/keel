@@ -39,6 +39,28 @@ func TestHTTPPolicyMatchesGlobPath(t *testing.T) {
 	}
 }
 
+func TestHTTPPolicyRejectsRequestsOutsideEndpointScope(t *testing.T) {
+	engine := NewHTTPPolicy(HTTPPolicyConfig{
+		ScopeHost: "api.github.com",
+		Default:   "allow",
+		Rules: []HTTPRule{
+			{Action: "allow", Methods: []string{"GET"}, Paths: []string{"/*"}},
+		},
+	})
+
+	decision := engine.Evaluate(HTTPRequest{
+		Host:   "gist.github.com",
+		Method: "GET",
+		Path:   "/",
+	})
+	if decision.Allowed {
+		t.Fatalf("decision = %#v, want denied outside endpoint scope", decision)
+	}
+	if decision.Reason != "http host outside endpoint" {
+		t.Fatalf("decision.Reason = %q, want http host outside endpoint", decision.Reason)
+	}
+}
+
 func TestHTTPPolicyNormalizesHostByStrippingPort(t *testing.T) {
 	engine := NewHTTPPolicy(HTTPPolicyConfig{
 		Default: "deny",

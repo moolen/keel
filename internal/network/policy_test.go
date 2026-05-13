@@ -16,6 +16,9 @@ func TestPolicyAuthorizesEndpointByHostPortAndSNI(t *testing.T) {
 			Host:            "api.github.com",
 			Port:            443,
 			RequireSNIMatch: true,
+			HTTP: HTTPPolicyConfig{
+				Default: "allow",
+			},
 		}},
 	}, NewTracker(60*time.Second))
 
@@ -31,6 +34,9 @@ func TestPolicyAuthorizesEndpointByHostPortAndSNI(t *testing.T) {
 	}
 	if decision.EndpointHost != "api.github.com" || decision.Rule != "endpoint:api.github.com:443" {
 		t.Fatalf("decision = %+v", decision)
+	}
+	if decision.HTTP.ScopeHost != "api.github.com" {
+		t.Fatalf("decision.HTTP.ScopeHost = %q, want api.github.com", decision.HTTP.ScopeHost)
 	}
 }
 

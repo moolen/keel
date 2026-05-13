@@ -843,18 +843,20 @@ func endpointRulesFromConfig(items []config.EndpointConfig, audit bool) []networ
 			rule.MITMRequired = item.MITM.Required
 		}
 		if item.HTTP != nil {
-			rule.HTTP = endpointHTTPPolicyFromConfig(*item.HTTP, audit)
+			rule.HTTP = endpointHTTPPolicyFromConfig(item.Host, *item.HTTP, audit)
 		}
 		rules = append(rules, rule)
 	}
 	return rules
 }
 
-func endpointHTTPPolicyFromConfig(item config.EndpointHTTPConfig, audit bool) network.HTTPPolicyConfig {
+func endpointHTTPPolicyFromConfig(host string, item config.EndpointHTTPConfig, audit bool) network.HTTPPolicyConfig {
 	return network.HTTPPolicyConfig{
-		Default: item.Default,
-		Rules:   endpointHTTPRulesFromConfig(item.Rules),
-		Audit:   audit,
+		ScopeHost: host,
+		Enabled:   true,
+		Default:   item.Default,
+		Rules:     endpointHTTPRulesFromConfig(item.Rules),
+		Audit:     audit,
 	}
 }
 
