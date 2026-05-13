@@ -1,11 +1,11 @@
 package image
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+
+	"github.com/moolen/keel/internal/ext4"
 )
 
 const mib = int64(1024 * 1024)
@@ -40,24 +40,18 @@ func CreateRootfsImage(opts CreateRootfsOptions) (CreateRootfsResult, error) {
 		opts.Label = "rootfs"
 	}
 
-	if err := os.MkdirAll(filepath.Dir(opts.ImagePath), 0o755); err != nil {
-		return CreateRootfsResult{}, err
-	}
-	if err := exec.CommandContext(context.Background(), "truncate", "-s", fmt.Sprintf("%dM", opts.SizeMB), opts.ImagePath).Run(); err != nil {
-		return CreateRootfsResult{}, fmt.Errorf("create sparse image: %w", err)
-	}
-	cmd := exec.CommandContext(context.Background(), "mkfs.ext4", "-q", "-F", "-L", opts.Label, "-d", opts.SourceDir, opts.ImagePath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return CreateRootfsResult{}, fmt.Errorf("mkfs.ext4: %w: %s", err, output)
-	}
-
-	info, err := os.Stat(opts.ImagePath)
+	result, err := ext4.CreateImage(ext4.CreateOptions{
+		SourceDir: opts.SourceDir,
+		ImagePath: opts.ImagePath,
+		SizeMB:    opts.SizeMB,
+		Label:     opts.Label,
+	})
 	if err != nil {
 		return CreateRootfsResult{}, err
 	}
 	return CreateRootfsResult{
-		ImagePath: opts.ImagePath,
-		SizeBytes: info.Size(),
+		ImagePath: result.ImagePath,
+		SizeBytes: result.SizeBytes,
 	}, nil
 }
 

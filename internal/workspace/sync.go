@@ -2,17 +2,15 @@ package workspace
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/term"
 
-	"github.com/moolen/keel/internal/paths"
+	"github.com/moolen/keel/internal/ext4"
 )
 
 type SyncResult struct {
@@ -39,9 +37,9 @@ type ImageSyncOptions struct {
 }
 
 func SyncImage(opts ImageSyncOptions) (SyncResult, error) {
-	vmDir, cleanup, err := mountImageReadOnly(opts.ImagePath)
+	vmDir, cleanup, err := ext4.MountReadOnly(opts.ImagePath, "keel-workspace-mount-*", true)
 	if err != nil {
-		return SyncResult{}, err
+		return SyncResult{}, fmt.Errorf("mount workspace image: %w", err)
 	}
 	defer cleanup()
 
@@ -106,33 +104,6 @@ func ApplyDiff(hostDir, vmDir string, diff Diff, syncDeletes bool) error {
 		}
 	}
 	return os.RemoveAll(stagingRoot)
-}
-
-func mountImageReadOnly(imagePath string) (string, func(), error) {
-	mountDir, err := paths.NewTempDir("keel-workspace-mount-*")
-	if err != nil {
-		return "", nil, err
-	}
-
-	// Prefer a read-only loop mount, but fall back to a writable mount when
-	// ext4 requires journal recovery after the guest shuts down.
-	var mountErr error
-	var mountOutput []byte
-	for _, options := range []string{"loop,ro", "loop"} {
-		cmd := exec.CommandContext(context.Background(), "sudo", "mount", "-o", options, imagePath, mountDir)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			mountErr = fmt.Errorf("mount -o %s: %w", options, err)
-			mountOutput = output
-			continue
-		}
-		cleanup := func() {
-			_ = exec.CommandContext(context.Background(), "sudo", "umount", mountDir).Run()
-			_ = os.RemoveAll(mountDir)
-		}
-		return mountDir, cleanup, nil
-	}
-	_ = os.RemoveAll(mountDir)
-	return "", nil, fmt.Errorf("mount workspace image: %w: %s", mountErr, mountOutput)
 }
 
 func printDiffSummary(w io.Writer, diff Diff) {
@@ -263,4 +234,32 @@ func copyIntoHost(stagingRoot, hostDir, vmDir, rel string) error {
 		return err
 	}
 	return os.Rename(stagePath, targetPath)
+}
+
+func copyFile(source, target string, perm os.FileMode) error {
+	src, err := os.Open(source)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = src.Close()
+	}()
+
+	dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = dst.Close()
+	}()
+
+	if _, err := io.Copy(dst, src); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return nil
 }

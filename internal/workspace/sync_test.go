@@ -3,7 +3,6 @@ package workspace
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,47 +130,6 @@ func TestSyncImageAppliesChangesFromWorkspaceImage(t *testing.T) {
 	assertWorkspaceFile(t, hostDir, "modified.txt", "after")
 	assertWorkspaceFile(t, hostDir, "added.txt", "new file")
 	assertWorkspaceMissing(t, hostDir, "deleted.txt")
-}
-
-func TestMountImageReadOnlyFallsBackToWritableLoopMount(t *testing.T) {
-	binDir := t.TempDir()
-	logPath := filepath.Join(t.TempDir(), "sudo.log")
-	scriptPath := filepath.Join(binDir, "sudo")
-	script := fmt.Sprintf(`#!/bin/sh
-printf "%%s\n" "$*" >> %q
-if [ "$1" = "mount" ] && [ "$2" = "-o" ] && [ "$3" = "loop,ro" ]; then
-  exit 1
-fi
-exit 0
-`, logPath)
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	mountDir, cleanup, err := mountImageReadOnly(filepath.Join(t.TempDir(), "workspace.ext4"))
-	if err != nil {
-		t.Fatalf("mountImageReadOnly() error = %v", err)
-	}
-	cleanup()
-
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if got, want := len(lines), 3; got != want {
-		t.Fatalf("logged commands = %#v, want %d entries", lines, want)
-	}
-	if !strings.Contains(lines[0], "mount -o loop,ro") {
-		t.Fatalf("first command = %q, want readonly loop mount attempt", lines[0])
-	}
-	if !strings.Contains(lines[1], "mount -o loop ") {
-		t.Fatalf("second command = %q, want writable loop mount fallback", lines[1])
-	}
-	if got, want := lines[2], "umount "+mountDir; got != want {
-		t.Fatalf("cleanup command = %q, want %q", got, want)
-	}
 }
 
 func assertWorkspaceFile(t *testing.T, root, rel, want string) {

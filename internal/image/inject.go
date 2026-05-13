@@ -2,13 +2,13 @@ package image
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/moolen/keel/internal/ext4"
 )
 
 type GuestAgentAssets struct {
@@ -54,13 +54,13 @@ func InjectGuestAgent(rootfsPath string, assets GuestAgentAssets) error {
 		return err
 	}
 
-	if err := ensureExt4Dirs(rootfsPath, "/usr", "/usr/local", "/usr/local/bin", "/etc", "/etc/keel"); err != nil {
+	if err := ext4.EnsureDirs(rootfsPath, "/usr", "/usr/local", "/usr/local/bin", "/etc", "/etc/keel"); err != nil {
 		return err
 	}
-	if err := writeFileIntoExt4(rootfsPath, "/usr/local/bin/keel-agent", binaryPath); err != nil {
+	if err := ext4.WriteFile(rootfsPath, "/usr/local/bin/keel-agent", binaryPath); err != nil {
 		return err
 	}
-	if err := writeFileIntoExt4(rootfsPath, "/etc/keel/init.sh", initPath); err != nil {
+	if err := ext4.WriteFile(rootfsPath, "/etc/keel/init.sh", initPath); err != nil {
 		return err
 	}
 	return nil
@@ -96,7 +96,7 @@ fi
 		return err
 	}
 
-	if err := ensureExt4Dirs(rootfsPath,
+	if err := ext4.EnsureDirs(rootfsPath,
 		"/usr",
 		"/usr/local",
 		"/usr/local/share",
@@ -106,10 +106,10 @@ fi
 	); err != nil {
 		return err
 	}
-	if err := writeFileIntoExt4(rootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt", certPath); err != nil {
+	if err := ext4.WriteFile(rootfsPath, "/usr/local/share/ca-certificates/keel-local-ca.crt", certPath); err != nil {
 		return err
 	}
-	if err := writeFileIntoExt4(rootfsPath, "/etc/keel/install-ca.sh", scriptPath); err != nil {
+	if err := ext4.WriteFile(rootfsPath, "/etc/keel/install-ca.sh", scriptPath); err != nil {
 		return err
 	}
 	for _, bundlePath := range []string{
@@ -153,36 +153,8 @@ func EnsureGuestAgent(rootfsPath, digestPath string, assets GuestAgentAssets) (b
 	return true, nil
 }
 
-func debugfsWrite(rootfsPath, command string) error {
-	cmd := exec.CommandContext(context.Background(), "debugfs", "-w", "-R", command, rootfsPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		if isExistingPathMkdir(output) {
-			return nil
-		}
-		return fmt.Errorf("debugfs %q: %w: %s", command, err, output)
-	}
-	return nil
-}
-
-func ensureExt4Dirs(rootfsPath string, dirs ...string) error {
-	for _, dir := range dirs {
-		if err := debugfsWrite(rootfsPath, "mkdir "+dir); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeFileIntoExt4(rootfsPath, targetPath, sourcePath string) error {
-	if err := debugfsRemove(rootfsPath, targetPath); err != nil {
-		return err
-	}
-	return debugfsWrite(rootfsPath, fmt.Sprintf("write %s %s", sourcePath, targetPath))
-}
-
 func appendPEMToExt4FileIfPresent(rootfsPath, targetPath string, data []byte) error {
-	existing, err := debugfsReadFile(rootfsPath, targetPath)
+	existing, err := ext4.ReadFile(rootfsPath, targetPath)
 	if err != nil {
 		if strings.Contains(err.Error(), "File not found") {
 			return nil
@@ -209,23 +181,11 @@ func appendPEMToExt4FileIfPresent(rootfsPath, targetPath string, data []byte) er
 	if err := os.WriteFile(tempPath, combined, 0o644); err != nil {
 		return err
 	}
-	return writeFileIntoExt4(rootfsPath, targetPath, tempPath)
-}
-
-func debugfsRemove(rootfsPath, target string) error {
-	cmd := exec.CommandContext(context.Background(), "debugfs", "-w", "-R", "rm "+target, rootfsPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("debugfs remove %q: %w: %s", target, err, output)
-	}
-	if strings.Contains(string(output), "File not found") {
-		return nil
-	}
-	return nil
+	return ext4.WriteFile(rootfsPath, targetPath, tempPath)
 }
 
 func rootfsGuestAgentMatches(rootfsPath, wantDigest string) (bool, error) {
-	data, err := debugfsReadFile(rootfsPath, "/usr/local/bin/keel-agent")
+	data, err := ext4.ReadFile(rootfsPath, "/usr/local/bin/keel-agent")
 	if err != nil {
 		if strings.Contains(err.Error(), "File not found") {
 			return false, nil
@@ -234,31 +194,4 @@ func rootfsGuestAgentMatches(rootfsPath, wantDigest string) (bool, error) {
 	}
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("%x", sum[:]) == wantDigest, nil
-}
-
-func debugfsReadFile(rootfsPath, target string) ([]byte, error) {
-	tempFile, err := os.CreateTemp("", "keel-debugfs-*")
-	if err != nil {
-		return nil, err
-	}
-	tempPath := tempFile.Name()
-	if err := tempFile.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return nil, err
-	}
-	defer func() {
-		_ = os.Remove(tempPath)
-	}()
-
-	cmd := exec.CommandContext(context.Background(), "debugfs", "-R", fmt.Sprintf("dump %s %s", target, tempPath), rootfsPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("debugfs dump %q: %w: %s", target, err, output)
-	}
-	return os.ReadFile(tempPath)
-}
-
-func isExistingPathMkdir(output []byte) bool {
-	text := string(output)
-	return strings.Contains(text, "directory already exists")
 }

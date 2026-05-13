@@ -39,6 +39,36 @@ func TestCreateRootfsImage(t *testing.T) {
 	}
 }
 
+func TestCreateRootfsImageHandlesFilesUnderReadOnlyDirectories(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 is required for image conversion tests")
+	}
+
+	sourceDir := t.TempDir()
+	readOnlyDir := filepath.Join(sourceDir, "usr", "share", "readonly")
+	if err := os.MkdirAll(readOnlyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(readOnlyDir, "payload.txt"), []byte("keel\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.Chmod(readOnlyDir, 0o555); err != nil {
+		t.Fatalf("Chmod(read-only) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(readOnlyDir, 0o755)
+	})
+
+	imagePath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if _, err := CreateRootfsImage(CreateRootfsOptions{
+		SourceDir: sourceDir,
+		ImagePath: imagePath,
+		SizeMB:    128,
+	}); err != nil {
+		t.Fatalf("CreateRootfsImage() error = %v", err)
+	}
+}
+
 func TestEstimateRootfsSizeMBAddsHeadroomForLargeImages(t *testing.T) {
 	sourceDir := t.TempDir()
 	largeFile := filepath.Join(sourceDir, "payload.bin")

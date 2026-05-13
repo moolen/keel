@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -13,6 +12,7 @@ import (
 
 	bootmeta "github.com/moolen/keel/internal/bootmanifest"
 	"github.com/moolen/keel/internal/config"
+	"github.com/moolen/keel/internal/ext4"
 	keelfeatures "github.com/moolen/keel/internal/features"
 	"github.com/moolen/keel/internal/image"
 	"github.com/moolen/keel/internal/network"
@@ -171,11 +171,11 @@ func (p AssetPreparer) Prepare(ctx context.Context, cfg config.Config, progress 
 			return vm.RuntimeAssets{}, err
 		}
 	}
-	if err := copyRuntimeRootfs(layout.RootfsPath, runtimeRootfsPath); err != nil {
-		return vm.RuntimeAssets{}, err
+	if err := ext4.CopySparseFile(layout.RootfsPath, runtimeRootfsPath); err != nil {
+		return vm.RuntimeAssets{}, fmt.Errorf("copy runtime rootfs: %w", err)
 	}
-	if err := ensureRuntimeRootfsSize(runtimeRootfsPath, cfg.Resources.RootDiskMB); err != nil {
-		return vm.RuntimeAssets{}, err
+	if err := ext4.GrowImage(runtimeRootfsPath, cfg.Resources.RootDiskMB); err != nil {
+		return vm.RuntimeAssets{}, fmt.Errorf("ensure runtime rootfs size: %w", err)
 	}
 	if len(guestAssets.Binary) > 0 {
 		if _, err := image.EnsureGuestAgent(runtimeRootfsPath, layout.AgentPath, guestAssets); err != nil {
@@ -344,37 +344,6 @@ func (p AssetPreparer) controlDir() (string, error) {
 	return paths.NewRuntimeControlDir()
 }
 
-func copyRuntimeRootfs(sourcePath, runtimePath string) error {
-	src, err := os.Open(sourcePath)
-	if err != nil {
-		return fmt.Errorf("open cached rootfs: %w", err)
-	}
-	defer func() {
-		_ = src.Close()
-	}()
-	info, err := src.Stat()
-	if err != nil {
-		return fmt.Errorf("stat cached rootfs: %w", err)
-	}
-	if err := os.Remove(runtimePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove runtime rootfs: %w", err)
-	}
-	dst, err := os.OpenFile(runtimePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
-	if err != nil {
-		return fmt.Errorf("create runtime rootfs: %w", err)
-	}
-	defer func() {
-		_ = dst.Close()
-	}()
-	if err := copySparseFile(dst, src, info.Size()); err != nil {
-		return fmt.Errorf("copy runtime rootfs: %w", err)
-	}
-	if err := dst.Sync(); err != nil {
-		return fmt.Errorf("sync runtime rootfs: %w", err)
-	}
-	return nil
-}
-
 func (p AssetPreparer) runtimeFreeBytes(path string) (uint64, error) {
 	if p.RuntimeFreeBytes != nil {
 		return p.RuntimeFreeBytes(path)
@@ -424,106 +393,6 @@ func runtimeFreeBytes(path string) (uint64, error) {
 		return 0, err
 	}
 	return stat.Bavail * uint64(stat.Bsize), nil
-}
-
-func copySparseFile(dst, src *os.File, size int64) error {
-	const chunkSize = 4 << 20
-
-	if size == 0 {
-		return nil
-	}
-	if err := dst.Truncate(size); err != nil {
-		return err
-	}
-	if err := copySparseExtents(dst, src, size, chunkSize); err == nil {
-		return nil
-	} else if !isSparseSeekUnsupported(err) {
-		return err
-	}
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	if _, err := dst.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	if err := dst.Truncate(0); err != nil {
-		return err
-	}
-	_, err := io.CopyBuffer(dst, src, make([]byte, chunkSize))
-	return err
-}
-
-func copySparseExtents(dst, src *os.File, size int64, chunkSize int) error {
-	buf := make([]byte, chunkSize)
-	offset := int64(0)
-	for offset < size {
-		dataOffset, err := unix.Seek(int(src.Fd()), offset, unix.SEEK_DATA)
-		switch err {
-		case nil:
-		case unix.ENXIO:
-			return nil
-		default:
-			return err
-		}
-		if dataOffset >= size {
-			return nil
-		}
-		holeOffset, err := unix.Seek(int(src.Fd()), dataOffset, unix.SEEK_HOLE)
-		if err != nil {
-			return err
-		}
-		if holeOffset > size {
-			holeOffset = size
-		}
-		remaining := holeOffset - dataOffset
-		if _, err := src.Seek(dataOffset, io.SeekStart); err != nil {
-			return err
-		}
-		if _, err := dst.Seek(dataOffset, io.SeekStart); err != nil {
-			return err
-		}
-		for remaining > 0 {
-			chunk := int64(len(buf))
-			if remaining < chunk {
-				chunk = remaining
-			}
-			n := int(chunk)
-			if _, err := io.ReadFull(src, buf[:n]); err != nil {
-				return err
-			}
-			if _, err := dst.Write(buf[:n]); err != nil {
-				return err
-			}
-			remaining -= chunk
-		}
-		offset = holeOffset
-	}
-	return nil
-}
-
-func isSparseSeekUnsupported(err error) bool {
-	return err == unix.ENXIO || err == unix.EINVAL || err == unix.ENOTSUP || err == unix.ENOSYS || err == unix.EOPNOTSUPP
-}
-
-func ensureRuntimeRootfsSize(imagePath string, minSizeMB int) error {
-	if minSizeMB <= 0 {
-		return nil
-	}
-	info, err := os.Stat(imagePath)
-	if err != nil {
-		return fmt.Errorf("stat runtime rootfs: %w", err)
-	}
-	targetBytes := int64(minSizeMB) * 1024 * 1024
-	if info.Size() >= targetBytes {
-		return nil
-	}
-	if err := exec.CommandContext(context.Background(), "truncate", "-s", fmt.Sprintf("%dM", minSizeMB), imagePath).Run(); err != nil {
-		return fmt.Errorf("grow runtime rootfs image: %w", err)
-	}
-	if output, err := exec.CommandContext(context.Background(), "resize2fs", imagePath).CombinedOutput(); err != nil {
-		return fmt.Errorf("resize runtime rootfs filesystem: %w: %s", err, output)
-	}
-	return nil
 }
 
 func guestTrustAssetsForConfig(cfg config.Config) (image.GuestTrustAssets, error) {

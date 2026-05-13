@@ -1,12 +1,11 @@
 package volume
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
+	"github.com/moolen/keel/internal/ext4"
 	"github.com/moolen/keel/internal/workspace"
 )
 
@@ -26,9 +25,9 @@ func SyncImage(opts SyncOptions) error {
 		})
 		return err
 	case "file":
-		mountDir, cleanup, err := mountImageReadOnly(opts.ImagePath)
+		mountDir, cleanup, err := ext4.MountReadOnly(opts.ImagePath, "keel-volume-mount-*", false)
 		if err != nil {
-			return err
+			return fmt.Errorf("mount volume image: %w", err)
 		}
 		defer cleanup()
 		sourceFile := filepath.Join(mountDir, opts.Subpath)
@@ -43,21 +42,4 @@ func SyncImage(opts SyncOptions) error {
 	default:
 		return fmt.Errorf("unknown volume kind %q", opts.Kind)
 	}
-}
-
-func mountImageReadOnly(imagePath string) (string, func(), error) {
-	mountDir, err := os.MkdirTemp("", "keel-volume-mount-*")
-	if err != nil {
-		return "", nil, err
-	}
-	cmd := exec.CommandContext(context.Background(), "sudo", "mount", "-o", "loop,ro", imagePath, mountDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		_ = os.RemoveAll(mountDir)
-		return "", nil, fmt.Errorf("mount volume image: %w: %s", err, output)
-	}
-	cleanup := func() {
-		_ = exec.CommandContext(context.Background(), "sudo", "umount", mountDir).Run()
-		_ = os.RemoveAll(mountDir)
-	}
-	return mountDir, cleanup, nil
 }
