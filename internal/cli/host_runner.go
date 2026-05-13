@@ -50,7 +50,7 @@ func startupPhase(index int, title, detail string) startupStep {
 
 func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 	if req.Config.DryRun {
-		cfg, err := r.runtimeConfig(req.Config)
+		cfg, err := r.dryRunConfig(req.Config)
 		if err != nil {
 			return err
 		}
@@ -268,6 +268,23 @@ func (p cliRuntimeProgress) Step(step keelruntime.ProgressStep) {
 }
 
 func (r HostRunner) runtimeConfig(cfg config.Config) (config.Config, error) {
+	updated, err := r.runtimeEnvConfig(cfg)
+	if err != nil {
+		return config.Config{}, err
+	}
+	features, err := keelruntime.RuntimeFeatureConfig(cfg)
+	if err != nil {
+		return config.Config{}, err
+	}
+	updated.Features = features
+	return updated, nil
+}
+
+func (r HostRunner) dryRunConfig(cfg config.Config) (config.Config, error) {
+	return r.runtimeEnvConfig(cfg)
+}
+
+func (r HostRunner) runtimeEnvConfig(cfg config.Config) (config.Config, error) {
 	updated := cfg
 	resolveEnv := r.ResolveEnv
 	if resolveEnv == nil {
@@ -278,11 +295,6 @@ func (r HostRunner) runtimeConfig(cfg config.Config) (config.Config, error) {
 		return config.Config{}, err
 	}
 	updated.RuntimeEnv = values
-	features, err := keelruntime.RuntimeFeatureConfig(cfg)
-	if err != nil {
-		return config.Config{}, err
-	}
-	updated.Features = features
 	return updated, nil
 }
 

@@ -57,6 +57,30 @@ func TestHostRunnerDryRunPrintsSummary(t *testing.T) {
 	}
 }
 
+func TestHostRunnerDryRunDoesNotValidateFeatureRegistry(t *testing.T) {
+	var stdout bytes.Buffer
+	runner := HostRunner{}
+	cfg := config.Default()
+	cfg.DryRun = true
+	cfg.Features = []config.FeatureConfig{{
+		Name: "future-feature",
+		Config: map[string]any{
+			"enabled": true,
+		},
+	}}
+
+	if err := runner.Run(context.Background(), RunRequest{
+		Config:  cfg,
+		Command: []string{"/bin/sh"},
+		Stdout:  &stdout,
+	}); err != nil {
+		t.Fatalf("Run() error = %v, want dry-run summary without feature registry validation", err)
+	}
+	if !strings.Contains(stdout.String(), "dry-run") {
+		t.Fatalf("dry-run output = %q, want summary", stdout.String())
+	}
+}
+
 func TestForwardedPTYStdinSkipsNonTerminalWhenSyncConfirmEnabled(t *testing.T) {
 	stdin, err := os.CreateTemp(t.TempDir(), "stdin-*")
 	if err != nil {
