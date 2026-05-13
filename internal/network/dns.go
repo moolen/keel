@@ -19,7 +19,6 @@ type DNSResolver interface {
 
 type DNSProxy struct {
 	Policy   *PolicyEngine
-	Tracker  *Tracker
 	Resolver DNSResolver
 	Summary  *Summary
 	Events   *EventLogger

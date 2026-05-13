@@ -53,7 +53,6 @@ func TestDNSProxyAllowsAndTracksAnswers(t *testing.T) {
 	})
 	proxy := DNSProxy{
 		Policy:   engine,
-		Tracker:  tracker,
 		Resolver: resolver,
 		Summary:  summary,
 		Now: func() time.Time {
@@ -100,7 +99,6 @@ func TestDNSProxyDeniesEndpointMiss(t *testing.T) {
 	}
 	proxy := DNSProxy{
 		Policy:   engine,
-		Tracker:  tracker,
 		Resolver: resolver,
 		Summary:  summary,
 		Now:      func() time.Time { return time.Unix(100, 0) },
@@ -133,7 +131,6 @@ func TestDNSProxyLogsWouldDenyInAuditMode(t *testing.T) {
 	var events bytes.Buffer
 	proxy := DNSProxy{
 		Policy:   engine,
-		Tracker:  tracker,
 		Resolver: resolver,
 		Summary:  summary,
 		Events:   NewEventLogger(&events),
