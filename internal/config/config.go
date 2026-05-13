@@ -49,8 +49,8 @@ type NetworkConfig struct {
 	Mode      string           `yaml:"mode"`
 	Audit     bool             `yaml:"audit"`
 	Endpoints []EndpointConfig `yaml:"endpoints"`
-	IPRules   []IPRuleConfig  `yaml:"ip_rules"`
-	MITM      MITMConfig      `yaml:"mitm"`
+	IPRules   []IPRuleConfig   `yaml:"ip_rules"`
+	MITM      MITMConfig       `yaml:"mitm"`
 
 	LogDecisions bool `yaml:"-"`
 }

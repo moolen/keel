@@ -226,8 +226,25 @@ network:
 	if ep.HTTP == nil || ep.HTTP.Default != "deny" || len(ep.HTTP.Rules) != 1 {
 		t.Fatalf("endpoint HTTP = %+v, want default deny with one rule", ep.HTTP)
 	}
-	if ep.HTTP.Rules[0].Action != "allow" || ep.HTTP.Rules[0].Methods[0] != "GET" || ep.HTTP.Rules[0].Paths[0] != "/repos/*" {
-		t.Fatalf("endpoint HTTP rule = %+v", ep.HTTP.Rules[0])
+	rule := ep.HTTP.Rules[0]
+	if rule.Action != "allow" {
+		t.Fatalf("endpoint HTTP rule action = %q, want allow", rule.Action)
+	}
+	if len(rule.Methods) != 1 || rule.Methods[0] != "GET" {
+		t.Fatalf("endpoint HTTP rule methods = %+v, want [GET]", rule.Methods)
+	}
+	if len(rule.Paths) != 1 || rule.Paths[0] != "/repos/*" {
+		t.Fatalf("endpoint HTTP rule paths = %+v, want [/repos/*]", rule.Paths)
+	}
+	second := cfg.Network.Endpoints[1]
+	if second.Host != "objects.githubusercontent.com" || second.Port != 443 {
+		t.Fatalf("second endpoint = %+v, want objects.githubusercontent.com:443", second)
+	}
+	if second.MITM == nil {
+		t.Fatal("second endpoint MITM = nil, want required false")
+	}
+	if second.MITM.Required {
+		t.Fatalf("second endpoint MITM required = true, want false")
 	}
 	if len(cfg.Network.IPRules) != 1 || cfg.Network.IPRules[0].CIDR != "10.20.0.0/16" || cfg.Network.IPRules[0].Port != 5432 {
 		t.Fatalf("ip_rules = %+v", cfg.Network.IPRules)
