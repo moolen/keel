@@ -165,9 +165,11 @@ Then point Keel at the built file with `kernel.path`.
 ```yaml
 network:
   audit: true
-  dns:
-    denied:
-      - "*.example.com"
+  endpoints:
+    - host: api.github.com
+      port: 443
+      tls:
+        require_sni_match: true
 ```
 
 Then:
@@ -276,55 +278,34 @@ network:
   # Shutdown summaries report those results as policy=would_deny.
   audit: false
 
-  # Require TLS SNI on port 443 when DNS correlation is used.
-  deny_if_no_sni: true
+  # Endpoint rules are the primary infosec/review surface. Each endpoint
+  # combines DNS host, destination port, TLS requirements, optional MITM, and
+  # optional HTTP policy in one reviewable rule.
+  endpoints:
+    - host: api.github.com
+      port: 443
+      tls:
+        require_sni_match: true
+      mitm:
+        required: true
+      http:
+        # HTTP policy lives under an endpoint and requires mitm.required: true.
+        default: deny
+        rules:
+          - action: allow
+            methods: ["GET"]
+            paths: ["/repos/*", "/rate_limit"]
 
-  dns:
-    # Domain allowlist applied to DNS questions.
-    allowed:
-      - api.github.com
-      - auth.docker.io
-      - registry-1.docker.io
-      - "*.docker.io"
-      - "*.github.com"
+    - host: auth.docker.io
+      port: 443
+      tls:
+        require_sni_match: true
 
-    # Domain denylist applied before the allowlist.
-    denied:
-      - gist.github.com
-
-  tcp:
-    # Coarse IP allowlist fallback for destinations that are not DNS-correlated.
-    allowed_cidrs: []
-
-    # Coarse IP denylist applied before allowlist/correlation.
-    denied_cidrs:
-      - 10.0.0.0/8
-
-  tls:
-    # SNI allowlist for TLS traffic on port 443.
-    allowed_sni:
-      - api.github.com
-      - auth.docker.io
-      - registry-1.docker.io
-      - "*.github.com"
-
-    # SNI denylist checked before allowed_sni.
-    denied_sni:
-      - gist.github.com
+  # Direct IP rules are a narrow fallback for destinations that cannot be
+  # described as DNS-backed endpoints. They cannot define MITM or HTTP policy.
+  ip_rules: []
 
   mitm:
-    # Enable HTTP-aware policy over HTTPS by terminating TLS with a local CA.
-    enabled: false
-
-    # Current behavior is optional inspection, not a second transport mode.
-    mode: optional
-
-    # What to do when upstream TLS trust cannot be established.
-    on_untrusted_cert: deny
-
-    # Record HTTP request activity through the MITM path.
-    log_requests: true
-
     ca:
       # Name used for the persisted local CA.
       name: keel-local-ca
@@ -334,32 +315,6 @@ network:
 
       # Install the CA into Docker daemon/client trust paths in the guest.
       install_docker: true
-
-    bypass:
-      # Hosts that should not go through HTTP MITM inspection.
-      hosts: []
-
-      # SNI patterns that should bypass MITM on TLS flows.
-      sni: []
-
-  http:
-    # Default HTTP policy result after MITM inspection.
-    default: deny
-
-    # Ordered first-match HTTP policy rules.
-    rules:
-      - action: allow
-        host: api.github.com
-        methods: ["GET"]
-        paths:
-          - /repos/*
-          - /users/*
-
-      - action: deny
-        host: "*.github.com"
-        methods: ["POST", "PUT", "PATCH", "DELETE"]
-        paths:
-          - /*
 
 features:
   - name: docker
@@ -458,11 +413,11 @@ Inside the guest:
 
 On the host:
 
-- the DNS proxy evaluates `network.dns.allowed` and `network.dns.denied`
-- allowed answers are returned to the guest
-- returned IPs are tracked for later TCP correlation
+- the DNS proxy matches questions against `network.endpoints`
+- allowed endpoint answers are returned to the guest
+- returned IPs are tracked for later TCP correlation with the endpoint host and port
 
-Effectively, DNS is both a gate and an input to later TCP policy.
+Effectively, DNS is both a gate and an input to later endpoint policy.
 
 ### TCP and TLS path
 
@@ -484,14 +439,14 @@ If transparent redirect is not available:
 
 On the host:
 
-- the TCP proxy evaluates coarse destination policy
-- it correlates destination IPs back to previously allowed DNS answers
-- for TLS on `:443`, it inspects SNI when available
-- it applies `deny_if_no_sni`, `tls.denied_sni`, and `tls.allowed_sni`
+- the TCP proxy evaluates endpoint rules and direct `network.ip_rules`
+- it correlates destination IPs back to previously allowed endpoint DNS answers
+- for TLS endpoints with `tls.require_sni_match: true`, it verifies SNI matches the endpoint host
+- direct IP rules can allow a CIDR and port, but cannot define MITM or HTTP policy
 
 ### HTTP MITM path
 
-When `network.mitm.enabled: true`:
+When an endpoint sets `mitm.required: true`:
 
 - the host TCP proxy can terminate TLS for eligible HTTPS flows
 - Keel issues leaf certificates from a persisted local CA
@@ -500,12 +455,14 @@ When `network.mitm.enabled: true`:
 
 Once the request is visible as HTTP:
 
-- Keel applies ordered `network.http.rules`
-- matching fields are `host`, `method`, and `path`
+- Keel applies the ordered `http.rules` under that endpoint
+- matching fields are `method` and `path`
 - `path` uses glob-style matching
-- if no rule matches, `network.http.default` is applied
+- if no rule matches, the endpoint `http.default` is applied
 
 This is how Keel turns “allow GitHub” into “allow only `GET /repos/*` on `api.github.com`”.
+
+The old split DNS/TCP/TLS fields are removed. Endpoint rules are the primary infosec and review surface, and HTTP policy for HTTPS traffic lives under endpoints so it is tied to the MITM requirement that makes the request visible.
 
 ### Audit mode
 
@@ -530,11 +487,10 @@ Audit mode is useful for tightening policies without immediately breaking worklo
 
 Supported today:
 
-- DNS allow/deny policy
-- TCP/IP CIDR allow/deny policy
-- TLS SNI allow/deny policy
-- `deny_if_no_sni`
-- HTTP `host + method + path` policy through MITM
+- endpoint host and port policy
+- direct IP CIDR and port policy
+- per-endpoint TLS SNI matching
+- per-endpoint HTTP `method + path` policy through required MITM
 - audit mode
 - aggregated shutdown summaries
 - Docker-in-VM through the proxy path
@@ -552,9 +508,9 @@ Important limits:
 - GitHub-hosted CI cannot run the full Firecracker/KVM e2e suite; those tests need a suitable Linux host
 - macOS VM execution is not implemented yet
 - arbitrary Docker build-stage trust injection for MITM is still best-effort by base image
-- HTTP policy only matches `host`, `method`, and `path` today
+- HTTP policy only matches `method` and `path` under the selected endpoint today
 - query-string, header, and body-aware policy are not implemented
-- HTTP policy depends on MITM being enabled for HTTPS
+- HTTP policy for HTTPS requires `mitm.required: true` on the endpoint
 
 ## Docker behavior
 
@@ -568,7 +524,7 @@ What works:
 
 What matters operationally:
 
-- your DNS/TLS allowlists must include the real registry and CDN hosts involved in the pull path
+- your endpoint rules must include the real registry and CDN hosts involved in the pull path
 - for HTTPS interception, Docker daemon/client trust is supported
 - arbitrary build-stage CA trust inside every base image is not guaranteed yet
 

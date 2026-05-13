@@ -26,29 +26,30 @@ volumes:
 
 network:
   mode: vsock
-  deny_if_no_sni: false
+  audit: false
+  endpoints:
+    - host: api.github.com
+      port: 443
+      tls:
+        require_sni_match: true
+      mitm:
+        required: true
+      http:
+        default: deny
+        rules:
+          - action: allow
+            methods: ["GET"]
+            paths: ["/repos/*", "/rate_limit"]
+    - host: auth.docker.io
+      port: 443
+      tls:
+        require_sni_match: true
+  ip_rules: []
   mitm:
-    enabled: true
     ca:
+      name: keel-local-ca
       install_system: true
       install_docker: true
-  dns:
-    allowed:
-      - api.github.com
-  tcp:
-    allowed_cidrs: []
-    denied_cidrs: []
-  tls:
-    allowed_sni:
-      - api.github.com
-  http:
-    default: deny
-    rules:
-      - action: allow
-        host: api.github.com
-        methods: ["GET"]
-        paths:
-          - /repos/*
 
 features:
   - name: docker
