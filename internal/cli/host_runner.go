@@ -78,7 +78,7 @@ func (r HostRunner) Run(ctx context.Context, req RunRequest) error {
 		return err
 	}
 
-	assets, err := r.prepareAssets(ctx, cfg, progress)
+	assets, err := r.prepareRuntimeAssets(ctx, cfg, progress)
 	if err != nil {
 		return err
 	}
@@ -241,7 +241,7 @@ func (r HostRunner) printNetworkSummary(req RunRequest, summary *network.Summary
 	_ = summary.WriteReport(stderr)
 }
 
-func (r HostRunner) prepareAssets(ctx context.Context, cfg config.Config, progress progressReporter) (vm.RuntimeAssets, error) {
+func (r HostRunner) prepareRuntimeAssets(ctx context.Context, cfg config.Config, progress progressReporter) (vm.RuntimeAssets, error) {
 	assetProgress := cliRuntimeProgress{reporter: progress}
 	if r.PrepareAssets != nil {
 		return r.PrepareAssets(ctx, cfg, assetProgress)
